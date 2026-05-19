@@ -13,6 +13,7 @@ interface Contact {
   score: number;
   notes: string;
   calendly_link: string;
+  pause_ai?: boolean;
   created_at: string;
   updated_at: string;
   conversations?: Conversation[];
@@ -49,6 +50,7 @@ export default function CRMDashboard() {
   const [editScore, setEditScore] = useState(0);
   const [editCalendly, setEditCalendly] = useState('');
   const [editNotes, setEditNotes] = useState('');
+  const [editPauseIA, setEditPauseIA] = useState(false);
   const [isSavingDetails, setIsSavingDetails] = useState(false);
 
   // States for sending messages
@@ -119,6 +121,7 @@ export default function CRMDashboard() {
       setEditScore(selectedContact.score || 0);
       setEditCalendly(selectedContact.calendly_link || '');
       setEditNotes(selectedContact.notes || '');
+      setEditPauseIA(selectedContact.pause_ai || false);
     }
   }, [selectedContact]);
 
@@ -157,7 +160,8 @@ export default function CRMDashboard() {
           status: editStatus,
           score: editScore,
           calendly_link: editCalendly,
-          notes: editNotes
+          notes: editNotes,
+          pause_ai: editPauseIA
         })
       });
 
@@ -509,6 +513,19 @@ export default function CRMDashboard() {
                   onChange={(e) => setEditCalendly(e.target.value)}
                   placeholder="https://calendly.com/tu-link"
                 />
+              </div>
+
+              <div className="input-group" style={{ flexDirection: 'row', alignItems: 'center', gap: '8px', marginTop: '12px' }}>
+                <input
+                  type="checkbox"
+                  id="pause-ai-checkbox"
+                  checked={editPauseIA}
+                  onChange={(e) => setEditPauseIA(e.target.checked)}
+                  style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+                />
+                <label htmlFor="pause-ai-checkbox" style={{ fontSize: '13px', fontWeight: 'bold', color: 'var(--warning)', cursor: 'pointer' }}>
+                  ⏸️ Pausar Inteligencia Artificial
+                </label>
               </div>
             </div>
 

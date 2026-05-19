@@ -25,7 +25,7 @@ export async function GET() {
 export async function PATCH(request: Request) {
   try {
     const body = await request.json();
-    const { id, name, status, score, notes, calendly_link } = body;
+    const { id, name, status, score, notes, calendly_link, pause_ai } = body;
 
     if (!id) {
       return NextResponse.json({ error: 'Missing contact ID' }, { status: 400 });
@@ -38,6 +38,7 @@ export async function PATCH(request: Request) {
     if (score !== undefined) updateData.score = parseInt(score, 10);
     if (notes !== undefined) updateData.notes = notes;
     if (calendly_link !== undefined) updateData.calendly_link = calendly_link;
+    if (pause_ai !== undefined) updateData.pause_ai = !!pause_ai;
     
     updateData.updated_at = new Date().toISOString();
 
