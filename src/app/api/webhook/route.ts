@@ -52,7 +52,7 @@ if (contact.pause_ai || contact.status === 'en_conversacion') {
 }
 
 // IA habilitada → generar respuesta
-const reply = await callAI(body);
+const reply = await callAI({ conversationId: conversation.id });
 
     if (reply) {
       // 4. Guardar la respuesta de la IA en Supabase
@@ -69,7 +69,11 @@ const reply = await callAI(body);
       }
 
       // 5. Enviar la respuesta por WhatsApp usando la API de Meta
-      await sendWhatsAppMessage(contact.phone, reply);
+      if (!contact.phone.startsWith('web-')) {
+        await sendWhatsAppMessage(contact.phone, reply);
+      } else {
+        console.log(`Mensaje omitido para número web de prueba en webhook: ${contact.phone}`);
+      }
     }
 
     return new Response(JSON.stringify({ success: true, reply }), {

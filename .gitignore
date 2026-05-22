@@ -6,3 +6,33 @@ out/
 .env.local
 .env.*.local
 .DS_Store
+
+.vercel
+.env*.local
+
+# Workflow JSON files with credentials (n8n)
+*.n8n_workflow*.json
+n8n_workflow_*.json
+exported_workflows.json
+workflow.json
+vercel.env
+
+# Scripts de utilidad y archivos de diagnóstico (no deben ir a producción)
+activate_n8n_workflows.js
+check_db_local.js
+check_db_workflows.js
+check_exported_active.js
+check_messages_local.js
+find_crm_nodes.js
+find_raw_emojis.js
+get_openrouter_free_models.js
+inspect_exported.js
+inspect_failed_executions.js
+inspect_valentina_wf.js
+rectify_and_update_workflows.js
+scratch_search_code.js
+sync_valentina_standalone.js
+test_*.js
+upload_env.js
+claude_instructions.md
+tsconfig.tsbuildinfo

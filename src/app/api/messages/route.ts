@@ -76,9 +76,15 @@ export async function POST(request: Request) {
     }
 
     // 3. Enviar el mensaje real a través de WhatsApp Cloud API
-    const sent = await sendWhatsAppMessage(toPhone, content.trim());
-    if (!sent) {
-      console.warn('Mensaje guardado en base de datos pero falló el envío por API de WhatsApp.');
+    let sent = false;
+    if (!toPhone.startsWith('web-')) {
+      sent = await sendWhatsAppMessage(toPhone, content.trim());
+      if (!sent) {
+        console.warn('Mensaje guardado en base de datos pero falló el envío por API de WhatsApp.');
+      }
+    } else {
+      console.log(`Mensaje manual guardado; envío de WhatsApp omitido por ser número web de prueba (${toPhone}).`);
+      sent = true;
     }
 
     return NextResponse.json({ success: true, message, whatsappSent: sent });
