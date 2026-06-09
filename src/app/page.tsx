@@ -18,6 +18,7 @@ interface Contact {
   pause_ai?: boolean;
   created_at: string;
   updated_at: string;
+  has_chat_messages?: boolean;
   conversations?: Conversation[];
 }
 
@@ -38,7 +39,28 @@ interface Message {
   created_at: string;
 }
 
+const CRM_PASSWORD = '***REMOVED_CRM_PASSWORD***';
+const INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutos
+const WARNING_BEFORE_MS = 60 * 1000;           // aviso 1 minuto antes
+
 export default function CRMDashboard() {
+  // Prevent hydration mismatch by rendering nothing on server until mounted
+  // Return null until mounted on client to avoid hydration mismatch
+  // ── AUTH ──────────────────────────────────────────────────
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  // ── AUTH STATE DECLARATIONS ───────────────────────────────────────
+  const [passwordInput, setPasswordInput] = useState('');
+  const [authError, setAuthError] = useState(false);
+  const [authShake, setAuthShake] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [showInactivityWarning, setShowInactivityWarning] = useState(false);
+  const [secondsLeft, setSecondsLeft] = useState(60);
+  const inactivityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const warningTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const countdownInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // ── DASHBOARD STATE DECLARATIONS ──────────────────────────────────
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -46,7 +68,14 @@ export default function CRMDashboard() {
   const [statusFilter, setStatusFilter] = useState('todos');
   
   // Navigation Tabs State
-  const [activeTab, setActiveTab] = useState<'chats' | 'dashboard' | 'calendar' | 'brain'>('chats');
+  const [activeTab, setActiveTab] = useState<'chats' | 'dashboard' | 'calendar' | 'brain' | 'calls'>('chats');
+
+  // Call report states
+  const [calls, setCalls] = useState<any[]>([]);
+  const [isFetchingCalls, setIsFetchingCalls] = useState(false);
+  const [showCallModal, setShowCallModal] = useState(false);
+  const [selectedCallReport, setSelectedCallReport] = useState<any | null>(null);
+  const [expandedCallId, setExpandedCallId] = useState<string | null>(null);
 
   // States for the edit form
   const [editName, setEditName] = useState('');
@@ -84,6 +113,41 @@ export default function CRMDashboard() {
     sentiment: { positive: 65, neutral: 25, negative: 10 }
   });
 
+  const logout = () => {
+    sessionStorage.removeItem('crm_auth');
+    setIsAuthenticated(false);
+    setShowInactivityWarning(false);
+  };
+
+  const resetInactivityTimer = () => {
+    // Si hay aviso visible, lo escondemos y reiniciamos
+    setShowInactivityWarning(false);
+    if (countdownInterval.current) clearInterval(countdownInterval.current);
+
+    if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
+    if (warningTimer.current) clearTimeout(warningTimer.current);
+
+    // Timer de aviso: 9 minutos después de la última actividad
+    warningTimer.current = setTimeout(() => {
+      setSecondsLeft(60);
+      setShowInactivityWarning(true);
+      countdownInterval.current = setInterval(() => {
+        setSecondsLeft(s => {
+          if (s <= 1) {
+            if (countdownInterval.current) clearInterval(countdownInterval.current);
+            return 0;
+          }
+          return s - 1;
+        });
+      }, 1000);
+    }, INACTIVITY_TIMEOUT_MS - WARNING_BEFORE_MS);
+
+    // Timer de logout: 10 minutos después de la última actividad
+    inactivityTimer.current = setTimeout(() => {
+      logout();
+    }, INACTIVITY_TIMEOUT_MS);
+  };
+
   const loadStats = async () => {
     try {
       const res = await fetch('/api/stats');
@@ -93,6 +157,21 @@ export default function CRMDashboard() {
       }
     } catch (error) {
       console.error('Error fetching stats:', error);
+    }
+  };
+
+  const loadCalls = async () => {
+    setIsFetchingCalls(true);
+    try {
+      const res = await fetch('/api/calls');
+      if (res.ok) {
+        const data = await res.json();
+        setCalls(data);
+      }
+    } catch (error) {
+      console.error('Error fetching calls:', error);
+    } finally {
+      setIsFetchingCalls(false);
     }
   };
     
@@ -130,6 +209,33 @@ export default function CRMDashboard() {
     }
   };
 
+  // Check auth state after mounting (client-only)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const auth = sessionStorage.getItem('crm_auth') === 'ok';
+      setIsAuthenticated(auth);
+      if (auth) {
+        resetInactivityTimer(); // Start timer if already authenticated
+      }
+      setMounted(true);
+    }
+  }, []);
+
+  // Arrancar y limpiar el temporizador de inactividad
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const events = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'click'];
+    const handleActivity = () => resetInactivityTimer();
+    events.forEach(e => window.addEventListener(e, handleActivity, { passive: true }));
+    resetInactivityTimer(); // arranque inicial
+    return () => {
+      events.forEach(e => window.removeEventListener(e, handleActivity));
+      if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
+      if (warningTimer.current) clearTimeout(warningTimer.current);
+      if (countdownInterval.current) clearInterval(countdownInterval.current);
+    };
+  }, [isAuthenticated]);
+
   // On Mount: load contacts and set up real-time polling
   useEffect(() => {
     loadContacts();
@@ -148,6 +254,13 @@ export default function CRMDashboard() {
       clearInterval(statsInterval);
     };
   }, [selectedContact?.id]);
+
+  // Fetch calls when switching to the 'calls' tab
+  useEffect(() => {
+    if (activeTab === 'calls') {
+      loadCalls();
+    }
+  }, [activeTab]);
 
   // Load messages whenever contact or conversation changes
   useEffect(() => {
@@ -191,7 +304,164 @@ export default function CRMDashboard() {
     }
   }, [messages, autoScroll]);
 
-  // Detect scroll behavior inside chat-body
+  // Setup sub-polling for active messages
+  useEffect(() => {
+    if (!selectedContact) return;
+    const activeConv = selectedContact.conversations?.find(c => !c.resolved) || selectedContact.conversations?.[0];
+    if (!activeConv) return;
+
+    const interval = setInterval(() => {
+      loadMessages(activeConv.id);
+    }, 3000); // Poll messages every 3 seconds when chat is open
+
+    return () => clearInterval(interval);
+  }, [selectedContact]);
+
+  if (!mounted) return null;
+
+  const handleLogin = () => {
+    if (passwordInput === CRM_PASSWORD) {
+      sessionStorage.setItem('crm_auth', 'ok');
+      setIsAuthenticated(true);
+      setAuthError(false);
+    } else {
+      setAuthError(true);
+      setAuthShake(true);
+      setPasswordInput('');
+      setTimeout(() => setAuthShake(false), 600);
+    }
+  };
+
+  if (!isAuthenticated) {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0d4f4a 100%)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontFamily: "'Segoe UI', system-ui, sans-serif",
+        padding: '20px'
+      }}>
+        <div style={{
+          background: 'rgba(255,255,255,0.05)',
+          backdropFilter: 'blur(24px)',
+          WebkitBackdropFilter: 'blur(24px)',
+          border: '1px solid rgba(255,255,255,0.12)',
+          borderRadius: '24px',
+          padding: '48px 40px',
+          width: '100%',
+          maxWidth: '400px',
+          boxShadow: '0 25px 50px rgba(0,0,0,0.5)',
+          animation: authShake ? 'shake 0.5s ease' : 'none',
+          textAlign: 'center'
+        }}>
+          {/* Logo / Ícono */}
+          <div style={{
+            width: '72px',
+            height: '72px',
+            background: 'linear-gradient(135deg, #0d9488, #0f766e)',
+            borderRadius: '50%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '32px',
+            margin: '0 auto 24px',
+            boxShadow: '0 0 30px rgba(13,148,136,0.4)'
+          }}>🔐</div>
+
+          <h1 style={{ color: '#fff', fontSize: '22px', fontWeight: 700, margin: '0 0 6px' }}>
+            CRM MP Salud
+          </h1>
+          <p style={{ color: '#94a3b8', fontSize: '14px', margin: '0 0 32px' }}>
+            Acceso restringido — ingresá tu contraseña
+          </p>
+
+          {/* Input contraseña */}
+          <div style={{ position: 'relative', marginBottom: '16px' }}>
+            <input
+              type={showPassword ? 'text' : 'password'}
+              value={passwordInput}
+              onChange={e => { setPasswordInput(e.target.value); setAuthError(false); }}
+              onKeyDown={e => e.key === 'Enter' && handleLogin()}
+              placeholder="Contraseña"
+              autoFocus
+              style={{
+                width: '100%',
+                padding: '14px 48px 14px 18px',
+                borderRadius: '12px',
+                border: authError ? '1px solid #f87171' : '1px solid rgba(255,255,255,0.15)',
+                background: 'rgba(255,255,255,0.08)',
+                color: '#fff',
+                fontSize: '16px',
+                outline: 'none',
+                boxSizing: 'border-box',
+                transition: 'border-color 0.2s',
+                letterSpacing: showPassword ? 'normal' : '3px'
+              }}
+            />
+            <button
+              onClick={() => setShowPassword(p => !p)}
+              style={{
+                position: 'absolute', right: '14px', top: '50%',
+                transform: 'translateY(-50%)',
+                background: 'none', border: 'none', cursor: 'pointer',
+                fontSize: '18px', color: '#94a3b8', padding: '0'
+              }}
+            >{showPassword ? '🙈' : '👁️'}</button>
+          </div>
+
+          {authError && (
+            <p style={{ color: '#f87171', fontSize: '13px', margin: '0 0 16px' }}>
+              ⚠️ Contraseña incorrecta. Intentá de nuevo.
+            </p>
+          )}
+
+          <button
+            onClick={handleLogin}
+            style={{
+              width: '100%',
+              padding: '14px',
+              background: 'linear-gradient(135deg, #0d9488, #0f766e)',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '12px',
+              fontSize: '16px',
+              fontWeight: 600,
+              cursor: 'pointer',
+              boxShadow: '0 4px 20px rgba(13,148,136,0.4)',
+              transition: 'transform 0.15s, box-shadow 0.15s'
+            }}
+            onMouseEnter={e => {
+              (e.target as HTMLButtonElement).style.transform = 'translateY(-2px)';
+              (e.target as HTMLButtonElement).style.boxShadow = '0 8px 25px rgba(13,148,136,0.5)';
+            }}
+            onMouseLeave={e => {
+              (e.target as HTMLButtonElement).style.transform = 'translateY(0)';
+              (e.target as HTMLButtonElement).style.boxShadow = '0 4px 20px rgba(13,148,136,0.4)';
+            }}
+          >
+            Ingresar al CRM
+          </button>
+
+          <p style={{ color: '#475569', fontSize: '12px', marginTop: '24px' }}>
+            Valentina IA · MP Salud © 2026
+          </p>
+        </div>
+
+        <style>{`
+          @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            20% { transform: translateX(-10px); }
+            40% { transform: translateX(10px); }
+            60% { transform: translateX(-6px); }
+            80% { transform: translateX(6px); }
+          }
+        `}</style>
+      </div>
+    );
+  }
+
   const handleChatScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const target = e.currentTarget;
     const scrollBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
@@ -213,22 +483,9 @@ export default function CRMDashboard() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  // Setup sub-polling for active messages
-  useEffect(() => {
-    if (!selectedContact) return;
-    const activeConv = selectedContact.conversations?.find(c => !c.resolved) || selectedContact.conversations?.[0];
-    if (!activeConv) return;
-
-    const interval = setInterval(() => {
-      loadMessages(activeConv.id);
-    }, 3000); // Poll messages every 3 seconds when chat is open
-
-    return () => clearInterval(interval);
-  }, [selectedContact]);
-
   const templates = [
     { label: '📋 Plantillas de respuesta...', value: '' },
-    { label: '👋 Saludo Inicial', value: '¡Hola! Che, ¿cómo va? Estaba viendo que te interesaste en nuestros planes de MP Salud. ¿Tenés un toque para charlar hoy?' },
+    { label: '👋 Saludo Inicial', value: '¡Hola! ¿Cómo va? Estaba viendo que te interesaste en nuestros planes de MP Salud. ¿Tenés un toque para charlar hoy?' },
     { label: '🏥 Cobertura e Información', value: 'Te comento: la cobertura de MP Salud es nacional e incluye clínicas de primer nivel, consultas médicas y urgencias sin copagos. ¿Buscás plan individual, de pareja o familiar?' },
     { label: '📅 Coordinar Cita', value: 'Dale, coordinemos una breve charla de 10 minutos para pasarte la cotización exacta y ver qué descuentos te aplican. ¿Qué día y hora te queda cómodo?' },
     { label: '📄 Solicitar DNI/Documentos', value: 'Buenísimo, para ir cargando tu afiliación al sistema, ¿me pasarías una foto de tu DNI (frente y dorso) y tu constancia de CUIL o monotributo? Así lo resolvemos al toque.' }
@@ -401,6 +658,13 @@ export default function CRMDashboard() {
       statusFilter === 'todos' || 
       contact.status === statusFilter;
 
+    // Filter out cold/unanswered leads globally from the sidebar to not waste time
+    const isColdStatus = ['NO CONTESTÓ', 'BUZÓN DE VOZ', 'CORTÓ RÁPIDO', 'CORTÓ A LA MITAD'].includes(contact.status || '');
+    const hasChat = contact.has_chat_messages;
+    if (isColdStatus && !hasChat) {
+      return false;
+    }
+
     return matchesSearch && matchesStatus;
   });
 
@@ -408,6 +672,7 @@ export default function CRMDashboard() {
     switch (status) {
       case 'nuevo': return 'badge badge-nuevo';
       case 'en_conversacion': return 'badge badge-en_conversacion';
+      case 'volver_a_llamar': return 'badge badge-volver_a_llamar';
       case 'lead_calificado': return 'badge badge-lead_calificado';
       case 'reunion_agendada': return 'badge badge-reunion_agendada';
       case 'lead_frio': return 'badge badge-lead_frio';
@@ -420,6 +685,7 @@ export default function CRMDashboard() {
     switch (status) {
       case 'nuevo': return 'Nuevo';
       case 'en_conversacion': return 'En Charla';
+      case 'volver_a_llamar': return 'Volver a Llamar';
       case 'lead_calificado': return 'Calificado';
       case 'reunion_agendada': return 'Cita Agendada';
       case 'lead_frio': return 'Frío';
@@ -453,6 +719,103 @@ export default function CRMDashboard() {
     if (!name) return 'WA';
     const parts = name.split(' ');
     return parts.map(p => p[0]).join('').substring(0, 2).toUpperCase();
+  };
+
+  const parseCallReport = (content: string) => {
+    const statusMatch = content.match(/Estado:\s*([^\n]+)/);
+    const durationMatch = content.match(/Duración:\s*(\d+)\s*segundos/);
+    
+    let notes = '';
+    const notesIndex = content.indexOf('Notas:');
+    const transcriptIndex = content.indexOf('Transcripción:');
+    
+    if (notesIndex !== -1) {
+      const endIdx = transcriptIndex !== -1 ? transcriptIndex : content.length;
+      notes = content.substring(notesIndex + 6, endIdx).trim();
+    }
+    
+    let transcript = '';
+    if (transcriptIndex !== -1) {
+      transcript = content.substring(transcriptIndex + 14).trim();
+    } else {
+      const doubleNewline = content.indexOf('\n\n', notesIndex !== -1 ? notesIndex : 0);
+      if (doubleNewline !== -1) {
+        transcript = content.substring(doubleNewline).trim();
+      }
+    }
+
+    return {
+      status: statusMatch ? statusMatch[1].trim() : 'N/A',
+      duration: durationMatch ? parseInt(durationMatch[1]) : 0,
+      notes: notes || 'Sin notas de llamada.',
+      transcript: transcript || '(Sin transcripción registrada)'
+    };
+  };
+
+  const formatDuration = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const formatCallDate = (dateStr: string) => {
+    if (!dateStr) return '';
+    const date = new Date(dateStr);
+    return date.toLocaleString('es-AR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
+
+  const renderTranscriptLines = (transcriptText: string) => {
+    if (!transcriptText) return null;
+    const lines = transcriptText.split('\n');
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px' }}>
+        {lines.map((line, idx) => {
+          const isUser = line.trim().startsWith('User:') || line.trim().startsWith('Customer:');
+          const isAssistant = line.trim().startsWith('Assistant:') || line.trim().startsWith('Agent:') || line.trim().startsWith('Valentina:');
+          
+          let speaker = '';
+          let text = line;
+          
+          if (isUser) {
+            speaker = 'Prospecto';
+            text = line.replace(/^(User:|Customer:)/i, '').trim();
+          } else if (isAssistant) {
+            speaker = 'Valentina (IA)';
+            text = line.replace(/^(Assistant:|Agent:|Valentina:)/i, '').trim();
+          } else {
+            if (!line.trim()) return null;
+            return <div key={idx} style={{ fontStyle: 'italic', color: 'var(--text-dim)', fontSize: '13px', padding: '4px 0' }}>{line}</div>;
+          }
+
+          return (
+            <div 
+              key={idx} 
+              style={{
+                alignSelf: isUser ? 'flex-end' : 'flex-start',
+                maxWidth: '85%',
+                background: isUser ? 'rgba(13, 148, 136, 0.15)' : 'rgba(255, 255, 255, 0.04)',
+                border: `1px solid ${isUser ? 'var(--accent)' : 'var(--border)'}`,
+                borderRadius: '12px',
+                padding: '10px 14px',
+                fontSize: '14px',
+                lineHeight: '1.4'
+              }}
+            >
+              <div style={{ fontSize: '11px', fontWeight: 'bold', color: isUser ? 'var(--accent)' : 'var(--text-muted)', marginBottom: '4px' }}>
+                {speaker}
+              </div>
+              <div style={{ wordBreak: 'break-word' }}>{text}</div>
+            </div>
+          );
+        })}
+      </div>
+    );
   };
 
   const activeConv = selectedContact?.conversations?.find(c => !c.resolved) || selectedContact?.conversations?.[0];
@@ -496,6 +859,12 @@ export default function CRMDashboard() {
           >
             <span className="emoji-span">🧠</span> Cerebro
           </button>
+          <button 
+            className={`nav-tab ${activeTab === 'calls' ? 'active' : ''}`}
+            onClick={() => setActiveTab('calls')}
+          >
+            <span className="emoji-span">📞</span> Llamadas
+          </button>
         </div>
 
         <div className="sidebar-search">
@@ -534,7 +903,7 @@ export default function CRMDashboard() {
             </button>
           </div>
           <div style={{ marginTop: '10px', display: 'flex', gap: '5px', overflowX: 'auto', paddingBottom: '2px' }}>
-            {['todos', 'nuevo', 'en_conversacion', 'lead_calificado', 'reunion_agendada', 'lead_frio', 'cliente'].map((st) => (
+            {['todos', 'nuevo', 'en_conversacion', 'volver_a_llamar', 'lead_calificado', 'reunion_agendada', 'lead_frio', 'cliente'].map((st) => (
               <button
                 key={st}
                 onClick={() => setStatusFilter(st)}
@@ -866,6 +1235,7 @@ export default function CRMDashboard() {
                     >
                       <option value="nuevo">Nuevo</option>
                       <option value="en_conversacion">En conversación</option>
+                      <option value="volver_a_llamar">Volver a Llamar</option>
                       <option value="lead_calificado">Lead Calificado</option>
                       <option value="reunion_agendada">Reunión Agendada</option>
                       <option value="lead_frio">Lead Frío</option>
@@ -1037,6 +1407,185 @@ export default function CRMDashboard() {
         <BrainView />
       )}
 
+      {/* 6. CALLS TAB VIEW */}
+      {activeTab === 'calls' && (
+        <div className="tab-pane-content" style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '24px', overflowY: 'auto', flex: 1, height: '100%' }}>
+          <div className="section-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border)', paddingBottom: '16px' }}>
+            <div>
+              <h2 className="section-title" style={{ margin: 0, fontSize: '22px', fontWeight: 'bold' }}>
+                <span className="emoji-span">📞</span> Reporte de Llamadas
+              </h2>
+              <p className="section-subtitle" style={{ margin: '4px 0 0 0', color: 'var(--text-muted)', fontSize: '14px' }}>
+                Historial de llamadas salientes automáticas realizadas por Valentina e integradas al CRM.
+              </p>
+            </div>
+            <button 
+              className="btn-save primary" 
+              onClick={loadCalls} 
+              disabled={isFetchingCalls}
+              style={{ width: 'auto', padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}
+            >
+              <span>🔄</span> {isFetchingCalls ? 'Actualizando...' : 'Actualizar'}
+            </button>
+          </div>
+
+          {isFetchingCalls && calls.length === 0 ? (
+            <div style={{ padding: '60px 20px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '15px' }}>
+              Cargando reporte de llamadas...
+            </div>
+          ) : calls.length === 0 ? (
+            <div style={{ padding: '60px 20px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '15px', background: 'var(--bg-card)', borderRadius: '12px', border: '1px solid var(--border)' }}>
+              No se encontraron registros de llamadas aún.
+            </div>
+          ) : (
+            <div style={{ overflowX: 'auto', background: 'var(--bg-card)', borderRadius: '12px', border: '1px solid var(--border)' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
+                <thead>
+                  <tr style={{ background: 'rgba(255,255,255,0.02)', borderBottom: '1px solid var(--border)', color: 'var(--text-muted)' }}>
+                    <th style={{ width: '40px', padding: '14px 16px' }}></th>
+                    <th style={{ padding: '14px 16px', textAlign: 'left', fontWeight: '600' }}>Prospecto</th>
+                    <th style={{ padding: '14px 16px', textAlign: 'left', fontWeight: '600' }}>Resultado de Llamada</th>
+                    <th style={{ padding: '14px 16px', textAlign: 'left', fontWeight: '600' }}>Duración</th>
+                    <th style={{ padding: '14px 16px', textAlign: 'left', fontWeight: '600' }}>Fecha y Hora</th>
+                    <th style={{ padding: '14px 16px', textAlign: 'left', fontWeight: '600' }}>Resumen / Notas</th>
+                    <th style={{ padding: '14px 16px', textAlign: 'center', fontWeight: '600' }}>Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {calls.map((call) => {
+                    const parsed = parseCallReport(call.content);
+                    const contact = call.conversation?.contact || { id: '', name: 'Desconocido', phone: 'N/A', status: 'nuevo', score: 0 };
+                    const isExpanded = expandedCallId === call.id;
+
+                    return (
+                      <React.Fragment key={call.id}>
+                        <tr 
+                          style={{ borderBottom: '1px solid var(--border)', cursor: 'pointer' }}
+                          className="table-row-hover"
+                          onClick={() => setExpandedCallId(isExpanded ? null : call.id)}
+                        >
+                          <td style={{ padding: '14px 16px', textAlign: 'center' }}>
+                            <span style={{ 
+                              fontSize: '10px', 
+                              color: 'var(--text-muted)',
+                              display: 'inline-block', 
+                              transition: 'transform 0.2s', 
+                              transform: isExpanded ? 'rotate(90deg)' : 'none' 
+                            }}>
+                              ▶
+                            </span>
+                          </td>
+                          <td style={{ padding: '14px 16px' }}>
+                            <div style={{ fontWeight: '600', color: 'var(--text-main)' }}>{contact.name}</div>
+                            <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>{contact.phone}</div>
+                          </td>
+                          <td style={{ padding: '14px 16px' }}>
+                            <span className={getStatusBadgeClass(parsed.status)}>
+                              {getStatusLabel(parsed.status)}
+                            </span>
+                          </td>
+                          <td style={{ padding: '14px 16px', color: 'var(--text-main)' }}>
+                            {formatDuration(parsed.duration)}
+                          </td>
+                          <td style={{ padding: '14px 16px', color: 'var(--text-muted)' }}>
+                            {formatCallDate(call.created_at)}
+                          </td>
+                          <td style={{ padding: '14px 16px', maxWidth: '280px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-muted)', fontSize: '13px' }}>
+                            {parsed.notes}
+                          </td>
+                          <td style={{ padding: '14px 16px', textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
+                            <button 
+                              className="btn-shortcut"
+                              onClick={() => {
+                                setSelectedCallReport({ ...call, parsed });
+                                setShowCallModal(true);
+                              }}
+                              style={{ padding: '6px 12px', fontSize: '12px', background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)', borderRadius: '6px', cursor: 'pointer' }}
+                            >
+                              Ver Detalles
+                            </button>
+                          </td>
+                        </tr>
+                        {isExpanded && (
+                          <tr onClick={(e) => e.stopPropagation()}>
+                            <td colSpan={7} style={{ padding: '0 24px 20px 24px', background: 'rgba(255,255,255,0.01)' }}>
+                              <div style={{
+                                display: 'grid',
+                                gridTemplateColumns: parsed.transcript ? '1fr 1.2fr' : '1fr',
+                                gap: '24px',
+                                padding: '20px',
+                                background: 'rgba(0, 0, 0, 0.2)',
+                                border: '1px solid var(--border)',
+                                borderRadius: '12px',
+                                boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.5)',
+                                marginTop: '4px'
+                              }}>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                  <div>
+                                    <h4 style={{ margin: '0 0 6px 0', fontSize: '12px', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                      📋 ¿Qué fue? (Resumen y Resultado)
+                                    </h4>
+                                    <div style={{ background: 'rgba(255, 255, 255, 0.02)', border: '1px solid var(--border)', padding: '12px 14px', borderRadius: '8px', color: 'var(--text-main)', fontSize: '13px', lineHeight: '1.5' }}>
+                                      <strong>Resultado: </strong>
+                                      <span className={getStatusBadgeClass(parsed.status)} style={{ marginLeft: '4px', display: 'inline-block' }}>
+                                        {getStatusLabel(parsed.status)}
+                                      </span>
+                                      <div style={{ marginTop: '8px', whiteSpace: 'pre-wrap' }}>
+                                        {parsed.notes}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                                    {contact.id && (
+                                      <button 
+                                        className="btn-save primary" 
+                                        onClick={() => {
+                                          const c = contacts.find(c => c.id === contact.id);
+                                          if (c) {
+                                            setSelectedContact(c);
+                                          }
+                                          setActiveTab('chats');
+                                        }}
+                                        style={{ width: 'auto', padding: '8px 16px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}
+                                      >
+                                        <span>💬</span> Ir al Chat de WhatsApp
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {parsed.transcript && (
+                                  <div>
+                                    <h4 style={{ margin: '0 0 6px 0', fontSize: '12px', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                      💬 ¿Qué dijo? (Transcripción de la llamada)
+                                    </h4>
+                                    <div style={{ 
+                                      maxHeight: '220px', 
+                                      overflowY: 'auto', 
+                                      background: 'rgba(0,0,0,0.3)', 
+                                      border: '1px solid var(--border)', 
+                                      borderRadius: '8px',
+                                      padding: '8px'
+                                    }}>
+                                      {renderTranscriptLines(parsed.transcript)}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ADD NEW LEAD MODAL */}
       {showAddModal && (
         <div className="modal-overlay" onClick={() => setShowAddModal(false)}>
@@ -1084,6 +1633,7 @@ export default function CRMDashboard() {
                 >
                   <option value="nuevo">Nuevo</option>
                   <option value="en_conversacion">En conversación</option>
+                  <option value="volver_a_llamar">Volver a Llamar</option>
                   <option value="lead_calificado">Lead Calificado</option>
                   <option value="reunion_agendada">Reunión Agendada</option>
                   <option value="lead_frio">Lead Frío</option>
@@ -1108,6 +1658,169 @@ export default function CRMDashboard() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* VIEW CALL REPORT DETAILS MODAL */}
+      {showCallModal && selectedCallReport && (
+        <div className="modal-overlay" onClick={() => setShowCallModal(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '650px', width: '90%' }}>
+            <div className="modal-header">
+              <h3 className="modal-title">
+                <span className="emoji-span">📞</span> Detalle de Llamada: {selectedCallReport.conversation?.contact?.name}
+              </h3>
+              <button 
+                type="button" 
+                className="btn-close-modal" 
+                onClick={() => setShowCallModal(false)}
+                aria-label="Cerrar modal"
+              >
+                ✕
+              </button>
+            </div>
+            
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', maxHeight: '70vh', overflowY: 'auto', paddingRight: '4px' }}>
+              
+              {/* Call Details Grid */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', background: 'rgba(255,255,255,0.02)', padding: '14px', borderRadius: '8px', border: '1px solid var(--border)' }}>
+                <div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Teléfono / Celular</div>
+                  <div style={{ fontWeight: '600', marginTop: '2px' }}>{selectedCallReport.conversation?.contact?.phone}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Resultado (Vapi)</div>
+                  <div style={{ marginTop: '2px' }}>
+                    <span className={getStatusBadgeClass(selectedCallReport.parsed.status)}>
+                      {getStatusLabel(selectedCallReport.parsed.status)}
+                    </span>
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Fecha y Hora</div>
+                  <div style={{ fontWeight: '500', marginTop: '2px' }}>{formatCallDate(selectedCallReport.created_at)}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Duración de Conversación</div>
+                  <div style={{ fontWeight: '500', marginTop: '2px' }}>{formatDuration(selectedCallReport.parsed.duration)} ({selectedCallReport.parsed.duration} segundos)</div>
+                </div>
+              </div>
+
+              {/* Call Notes / Summary */}
+              <div>
+                <h4 style={{ margin: '0 0 8px 0', fontSize: '14px', fontWeight: '600', color: 'var(--text-muted)' }}>Resumen / Notas de Llamada</h4>
+                <div style={{ background: 'rgba(245, 158, 11, 0.05)', border: '1px solid rgba(245, 158, 11, 0.2)', padding: '14px', borderRadius: '8px', color: 'var(--text-main)', fontSize: '14px', lineHeight: '1.5' }}>
+                  {selectedCallReport.parsed.notes}
+                </div>
+              </div>
+
+              {/* Scrollable Conversation Transcript (Chat Bubble format) */}
+              <div>
+                <h4 style={{ margin: '0 0 8px 0', fontSize: '14px', fontWeight: '600', color: 'var(--text-muted)' }}>Transcripción de la Conversación</h4>
+                <div style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: '8px', overflow: 'hidden' }}>
+                  {renderTranscriptLines(selectedCallReport.parsed.transcript)}
+                </div>
+              </div>
+
+            </div>
+            
+            <div className="modal-footer" style={{ marginTop: '20px' }}>
+              <button 
+                type="button" 
+                className="btn-cancel" 
+                onClick={() => setShowCallModal(false)}
+              >
+                Cerrar
+              </button>
+              
+              {selectedCallReport.conversation?.contact?.id && (
+                <button 
+                  type="button" 
+                  className="btn-save primary" 
+                  onClick={() => {
+                    const c = contacts.find(c => c.id === selectedCallReport.conversation.contact.id);
+                    if (c) {
+                      setSelectedContact(c);
+                    }
+                    setActiveTab('chats');
+                    setShowCallModal(false);
+                  }}
+                  style={{ width: 'auto', paddingLeft: '16px', paddingRight: '16px' }}
+                >
+                  💬 Ir al Chat de WhatsApp
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── AVISO DE INACTIVIDAD ─────────────────────────────── */}
+      {showInactivityWarning && (
+        <div style={{
+          position: 'fixed', inset: 0,
+          background: 'rgba(0,0,0,0.55)',
+          backdropFilter: 'blur(6px)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          zIndex: 9999,
+          fontFamily: "'Segoe UI', system-ui, sans-serif"
+        }}>
+          <div style={{
+            background: 'linear-gradient(135deg, #0f172a, #1e293b)',
+            border: '1px solid rgba(255,255,255,0.12)',
+            borderRadius: '20px',
+            padding: '40px 36px',
+            maxWidth: '380px',
+            width: '100%',
+            textAlign: 'center',
+            boxShadow: '0 25px 60px rgba(0,0,0,0.6)'
+          }}>
+            <div style={{ fontSize: '40px', marginBottom: '16px' }}>⏱️</div>
+            <h2 style={{ color: '#fff', fontSize: '18px', fontWeight: 700, margin: '0 0 10px' }}>
+              ¿Seguís ahí?
+            </h2>
+            <p style={{ color: '#94a3b8', fontSize: '14px', margin: '0 0 20px', lineHeight: 1.6 }}>
+              Por seguridad, el CRM se cierra en <strong style={{ color: '#f87171' }}>{secondsLeft}s</strong> por inactividad.
+            </p>
+            <div style={{
+              width: '100%', height: '6px',
+              background: 'rgba(255,255,255,0.1)',
+              borderRadius: '99px', marginBottom: '24px', overflow: 'hidden'
+            }}>
+              <div style={{
+                height: '100%',
+                width: `${(secondsLeft / 60) * 100}%`,
+                background: secondsLeft > 20
+                  ? 'linear-gradient(90deg, #0d9488, #14b8a6)'
+                  : 'linear-gradient(90deg, #dc2626, #f87171)',
+                borderRadius: '99px',
+                transition: 'width 1s linear, background 0.5s'
+              }} />
+            </div>
+            <button
+              onClick={resetInactivityTimer}
+              style={{
+                width: '100%', padding: '13px',
+                background: 'linear-gradient(135deg, #0d9488, #0f766e)',
+                color: '#fff', border: 'none', borderRadius: '12px',
+                fontSize: '15px', fontWeight: 600, cursor: 'pointer',
+                boxShadow: '0 4px 20px rgba(13,148,136,0.4)',
+                marginBottom: '10px'
+              }}
+            >
+              ✅ Sí, continuar
+            </button>
+            <button
+              onClick={logout}
+              style={{
+                width: '100%', padding: '11px',
+                background: 'transparent',
+                color: '#64748b', border: '1px solid rgba(255,255,255,0.08)',
+                borderRadius: '12px', fontSize: '14px', cursor: 'pointer'
+              }}
+            >
+              Cerrar sesión
+            </button>
           </div>
         </div>
       )}
@@ -1469,7 +2182,7 @@ CREATE TABLE IF NOT EXISTS public.ai_brain (
 -- Insertar valores iniciales por defecto
 INSERT INTO public.ai_brain (key, value)
 VALUES 
-('system_prompt_whatsapp', 'Eres Valentina, asesora comercial de MP Salud. Estás chateando por WhatsApp con un lead. Tu tono es amigable, profesional y muy argentino (usando voseo rioplatense: "che", "tenés", "comunicate", etc.). Tu objetivo es asesorar sobre los planes de salud, resolver dudas y agendar una llamada o video-auditoría con un asesor humano.'),
+('system_prompt_whatsapp', 'Eres Valentina, asesora comercial de MP Salud. Estás chateando por WhatsApp con un lead. Tu tono es amigable, profesional y muy argentino (usando voseo rioplatense: "tenés", "comunicate", etc.). Tu objetivo es asesorar sobre los planes de salud, resolver dudas y agendar una llamada o video-auditoría con un asesor humano.'),
 ('knowledge_base', '- MP Salud ofrece planes individuales, familiares y corporativos.\\n- Cobertura nacional en clínicas de primer nivel.\\n- Precios competitivos y promociones por traspaso de obra social.'),
 ('learned_facts', '')
 ON CONFLICT (key) DO NOTHING;

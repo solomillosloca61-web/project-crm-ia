@@ -15,7 +15,7 @@ export async function notifyAdmin(
   score: number,
   status: string
 ): Promise<boolean> {
-  const adminPhone = '+5491178297354';
+  const adminPhone = process.env.ADMIN_PHONE || '+5491178297354';
   const message = `¡Nuevo Lead Calificado!\nNombre: ${name}\nTeléfono: ${phone}\nScore: ${score}\nEstado: ${status}`;
   return await sendWhatsAppMessage(adminPhone, message);
 }

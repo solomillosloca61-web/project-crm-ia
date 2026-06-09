@@ -1,7 +1,9 @@
+// C:\Users\lucia\PROJECT_CRM_IA\src\app\api\cron\followup\route.ts
 import { NextRequest } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { supabaseService } from '@/lib/supabase';
 import { callAI } from '@/lib/ai';
 import { sendWhatsAppMessage } from '@/lib/webhook';
+import { logger } from '@/lib/logger';
 
 /**
  * Helper: fecha ISO de hace 24 horas.
@@ -11,10 +13,10 @@ function twentyFourHoursAgo(): string {
 }
 
 /**
- * Construye el prompt que le entregaremos a OpenRouter para el follow‑up.
+ * Construye el prompt que le entregaremos al modelo para el follow‑up.
  */
 function buildPrompt(name: string): string {
-  return `Eres un asistente de salud profesional y amable. Genera un mensaje corto (<2 frases) para reenviar a ${name} recordándole que revise el link de Calendly para agendar una consulta. Usa tono formal y no incluyas emojis.`;
+  return `Eres Valentina, asesora comercial de MP Salud. Generá un mensaje corto de seguimiento por WhatsApp (máximo 2 frases) para enviarle a ${name} recordándole amigablemente agendar su llamada con un asesor. Usá voseo argentino profesional ("tenés", "querés", etc.), pero NUNCA uses la palabra "che" porque no suena profesional en este contexto. No agregues emojis ni texto introductorio.`;
 }
 
 /**
@@ -27,7 +29,7 @@ function buildPrompt(name: string): string {
 export async function GET(request: NextRequest) {
   try {
     // 1️⃣ Obtener contactos con sus conversaciones
-    const { data: contacts, error: contactsErr } = await supabase
+    const { data: contacts, error: contactsErr } = await supabaseService
       .from('contacts')
       .select(`id, name, phone, status, conversations (id, last_message) `)
       .neq('status', 'reunion_agendada')
@@ -38,7 +40,33 @@ export async function GET(request: NextRequest) {
     const cutoff = twentyFourHoursAgo();
     const pending: Array<{ contactId: string; name: string; phone: string; convId: string }> = [];
 
+    // Lista de estados excluidos del seguimiento automático
+    const excludedStatuses = [
+      'RECHAZO CLARO',
+      'CORTÓ RÁPIDO',
+      'CORTÓ A LA MITAD',
+      'NO CONTESTÓ',
+      'BUZÓN DE VOZ',
+      'lead_frio',
+      'NO APTO / SIN APORTES',
+      'NÚMERO EQUIVOCADO',
+      'YA TIENE MP SALUD',
+      'OBRA_SOCIAL_NO_ADHERIDA',
+      'NO COMPATIBLE_EDAD',
+      'MONOTRIBUTO_SOCIAL',
+      'MENOR_DE_EDAD',
+      'NÚMERO_INEXISTENTE',
+      'LLAMADA_CAIDA',
+      'NO_HABLA_ESPANOL',
+      'NOT_INTERESTED'
+    ];
+
     contacts?.forEach((c: any) => {
+      // Omitir contactos con estados negativos
+      if (c.status && excludedStatuses.includes(c.status)) {
+        return;
+      }
+
       const activeConv = (c.conversations || []).find((conv: any) => new Date(conv.last_message).toISOString() < cutoff);
       if (activeConv) {
         pending.push({
@@ -59,7 +87,7 @@ export async function GET(request: NextRequest) {
 
       // Guardar el mensaje en la tabla messages para que quede en el historial
       if (sent) {
-        await supabase.from('messages').insert({
+        await supabaseService.from('messages').insert({
           conversation_id: p.convId,
           role: 'assistant',
           content: reply,
@@ -68,7 +96,7 @@ export async function GET(request: NextRequest) {
 
       // Opcional: registrar en followup_logs (si la tabla existe)
       try {
-        await supabase.from('followup_logs').insert({
+        await supabaseService.from('followup_logs').insert({
           contact_id: p.contactId,
           conversation_id: p.convId,
           message_text: reply,
@@ -86,7 +114,7 @@ export async function GET(request: NextRequest) {
       headers: { 'Content-Type': 'application/json' },
     });
   } catch (err: any) {
-    console.error('Error en /api/cron/followup', err);
+    logger.error({ err: err.message }, 'Error en /api/cron/followup');
     return new Response(JSON.stringify({ error: err.message || 'unknown' }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },

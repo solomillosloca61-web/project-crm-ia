@@ -1,9 +1,11 @@
 // C:\Users\lucia\PROJECT_CRM_IA\src\app\api\webhook\route.ts
 import type { NextRequest } from 'next/server';
 import { verifyMetaSignature, sendWhatsAppMessage } from '@/lib/webhook';
-import { saveMessage, supabase } from '@/lib/supabase';
+import { saveMessage, supabaseService } from '@/lib/supabase';
 import { callAI } from '@/lib/ai';
 import { updateLeadScore } from '@/lib/lead';
+import { logger } from '@/lib/logger';
+import { WebhookPayloadSchema } from '@/lib/validation';
 
 // GET – Verificación de webhook con Meta Developers
 export async function GET(request: NextRequest) {
@@ -12,7 +14,7 @@ export async function GET(request: NextRequest) {
   const token = request.nextUrl.searchParams.get('hub.verify_token');
   const challenge = request.nextUrl.searchParams.get('hub.challenge');
   
-  console.log('Validación de Webhook - Token recibido:', token, 'Token esperado:', verifyToken);
+  logger.info({ token, expectedToken: verifyToken }, 'Validación de Webhook - Petición recibida');
   
   if (mode === 'subscribe' && token === verifyToken) {
     return new Response(challenge ?? '', { status: 200 });
@@ -25,14 +27,22 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     
+    // Validar el esquema de entrada
+    const parsed = WebhookPayloadSchema.safeParse(body);
+    if (!parsed.success) {
+      logger.warn({ errors: parsed.error.format() }, 'Payload de webhook inválido');
+      return new Response('Invalid payload structure', { status: 400 });
+    }
+
     // Verificar la firma de Meta (opcional)
     const isValid = verifyMetaSignature(request);
     if (!isValid) {
+      logger.warn('Firma de Meta inválida para el webhook');
       return new Response('Invalid signature', { status: 403 });
     }
 
-    // 1. Guardar el mensaje recibido en Supabase
-    const saved = await saveMessage(body);
+    // 1. Guardar el mensaje recibido en Supabase (saveMessage internamente ya usa supabaseService)
+    const saved = await saveMessage(parsed.data);
     if (!saved) {
       return new Response('Event processed but no database entries created', { status: 200 });
     }
@@ -40,23 +50,23 @@ export async function POST(request: NextRequest) {
     const { contact, conversation, message } = saved;
 
     // 2. Ejecutar Lead Scoring para calificar el interés del usuario
-    await updateLeadScore(contact.id, message.content);
+    await updateLeadScore(contact.id, message.content, contact.phone);
 
     // 3. Verificar si la IA está habilitada (estado "en_conversacion" o pausa) antes de consultar a la IA
-if (contact.pause_ai || contact.status === 'en_conversacion') {
-  // No enviamos respuesta automática; simplemente retornamos éxito.
-  return new Response(
-    JSON.stringify({ success: true, reply: null, note: 'IA pausada o conversación humana en curso' }),
-    { status: 200, headers: { 'Content-Type': 'application/json' } }
-  );
-}
+    if (contact.pause_ai || contact.status === 'en_conversacion') {
+      logger.info({ contactId: contact.id }, 'IA pausada o conversación humana en curso, no se enviará respuesta automática');
+      return new Response(
+        JSON.stringify({ success: true, reply: null, note: 'IA pausada o conversación humana en curso' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
 
-// IA habilitada → generar respuesta
-const reply = await callAI({ conversationId: conversation.id });
+    // IA habilitada → generar respuesta
+    const reply = await callAI({ conversationId: conversation.id });
 
     if (reply) {
       // 4. Guardar la respuesta de la IA en Supabase
-      const { error: insertError } = await supabase
+      const { error: insertError } = await supabaseService
         .from('messages')
         .insert({
           conversation_id: conversation.id,
@@ -65,14 +75,14 @@ const reply = await callAI({ conversationId: conversation.id });
         });
 
       if (insertError) {
-        console.error('Error guardando la respuesta de la IA en Supabase:', insertError);
+        logger.error({ err: insertError.message }, 'Error guardando la respuesta de la IA en Supabase');
       }
 
       // 5. Enviar la respuesta por WhatsApp usando la API de Meta
       if (!contact.phone.startsWith('web-')) {
         await sendWhatsAppMessage(contact.phone, reply);
       } else {
-        console.log(`Mensaje omitido para número web de prueba en webhook: ${contact.phone}`);
+        logger.info({ phone: contact.phone }, 'Mensaje omitido para número web de prueba en webhook');
       }
     }
 
@@ -81,7 +91,7 @@ const reply = await callAI({ conversationId: conversation.id });
       headers: { 'Content-Type': 'application/json' }
     });
   } catch (error: any) {
-    console.error('Fallo crítico en el procesamiento del Webhook:', error);
+    logger.error({ err: error.message }, 'Fallo crítico en el procesamiento del Webhook');
     return new Response(JSON.stringify({ error: error.message }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' }

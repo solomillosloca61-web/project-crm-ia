@@ -1,11 +1,18 @@
 // C:\Users\lucia\PROJECT_CRM_IA\src\lib\supabase.ts
 import { createClient } from '@supabase/supabase-js';
 
-if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
   throw new Error('Supabase configuration missing in env');
 }
 
+// Cliente con clave anónima (sujeto a RLS)
 export const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
+
+// Cliente con Service Role Key (bypassea RLS, para backend/Antigravity)
+export const supabaseService = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
@@ -18,7 +25,7 @@ export async function getOrCreateContact(phone: string, name?: string) {
   const cleanPhone = phone.trim();
 
   // Buscar contacto
-  const { data: contact, error: findError } = await supabase
+  const { data: contact, error: findError } = await supabaseService
     .from('contacts')
     .select('*')
     .eq('phone', cleanPhone)
@@ -34,7 +41,7 @@ export async function getOrCreateContact(phone: string, name?: string) {
   }
 
   // Si no existe, crearlo
-  const { data: newContact, error: createError } = await supabase
+  const { data: newContact, error: createError } = await supabaseService
     .from('contacts')
     .insert({
       phone: cleanPhone,
@@ -46,6 +53,17 @@ export async function getOrCreateContact(phone: string, name?: string) {
     .single();
 
   if (createError) {
+    // Si falla por restricción única (código Postgres 23505), intentar buscarlo de nuevo
+    if (createError.code === '23505' || createError.message?.includes('unique constraint') || createError.message?.includes('already exists')) {
+      const { data: retryContact, error: retryError } = await supabaseService
+        .from('contacts')
+        .select('*')
+        .eq('phone', cleanPhone)
+        .maybeSingle();
+      if (!retryError && retryContact) {
+        return retryContact;
+      }
+    }
     console.error('Error creando contacto:', createError);
     throw createError;
   }
@@ -57,7 +75,7 @@ export async function getOrCreateContact(phone: string, name?: string) {
  * Busca una conversación activa (no resuelta) para un contacto o crea una nueva.
  */
 export async function getOrCreateConversation(contactId: string) {
-  const { data: conversation, error: findError } = await supabase
+  const { data: conversation, error: findError } = await supabaseService
     .from('conversations')
     .select('*')
     .eq('contact_id', contactId)
@@ -76,7 +94,7 @@ export async function getOrCreateConversation(contactId: string) {
   }
 
   // Si no existe una activa, crear una nueva
-  const { data: newConversation, error: createError } = await supabase
+  const { data: newConversation, error: createError } = await supabaseService
     .from('conversations')
     .insert({
       contact_id: contactId,
@@ -141,7 +159,7 @@ export async function saveMessage(payload: any) {
     const conversation = await getOrCreateConversation(contact.id);
 
     // 4. Insertar el mensaje
-    const { data: message, error: insertError } = await supabase
+    const { data: message, error: insertError } = await supabaseService
       .from('messages')
       .insert({
         conversation_id: conversation.id,
@@ -157,13 +175,13 @@ export async function saveMessage(payload: any) {
     }
 
     // 5. Actualizar la fecha del último mensaje en la conversación
-    await supabase
+    await supabaseService
       .from('conversations')
       .update({ last_message: new Date().toISOString() })
       .eq('id', conversation.id);
 
     // 6. Actualizar la fecha del contacto
-    await supabase
+    await supabaseService
       .from('contacts')
       .update({ updated_at: new Date().toISOString() })
       .eq('id', contact.id);

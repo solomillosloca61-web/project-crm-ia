@@ -10,6 +10,7 @@ export interface Contact {
   calendly_link?: string;
   created_at?: string;
   updated_at?: string;
+  has_chat_messages?: boolean;
 }
 
 export interface Conversation {

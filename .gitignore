@@ -36,3 +36,5 @@ test_*.js
 upload_env.js
 claude_instructions.md
 tsconfig.tsbuildinfo
+*.log
+scratch/

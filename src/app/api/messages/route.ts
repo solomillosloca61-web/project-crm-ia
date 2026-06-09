@@ -1,19 +1,21 @@
 // C:\Users\lucia\PROJECT_CRM_IA\src\app\api\messages\route.ts
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { supabaseService } from '@/lib/supabase';
 import { sendWhatsAppMessage } from '@/lib/webhook';
+import { logger } from '@/lib/logger';
 
 // GET – Obtener todos los mensajes de una conversación específica
 export async function GET(request: Request) {
+  let conversationId: string | null = null;
   try {
     const { searchParams } = new URL(request.url);
-    const conversationId = searchParams.get('conversationId');
+    conversationId = searchParams.get('conversationId');
 
     if (!conversationId) {
       return NextResponse.json({ error: 'Missing conversationId' }, { status: 400 });
     }
 
-    const { data: messages, error } = await supabase
+    const { data: messages, error } = await supabaseService
       .from('messages')
       .select('*')
       .eq('conversation_id', conversationId)
@@ -25,7 +27,7 @@ export async function GET(request: Request) {
 
     return NextResponse.json(messages);
   } catch (error: any) {
-    console.error('Error fetching messages:', error);
+    logger.error({ err: error.message, conversationId }, 'Error fetching messages');
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
@@ -41,7 +43,7 @@ export async function POST(request: Request) {
     }
 
     // 1. Guardar el mensaje en Supabase con rol de 'assistant' (agente manual)
-    const { data: message, error: insertError } = await supabase
+    const { data: message, error: insertError } = await supabaseService
       .from('messages')
       .insert({
         conversation_id: conversationId,
@@ -56,20 +58,20 @@ export async function POST(request: Request) {
     }
 
     // 2. Actualizar fecha en conversación y contacto
-    await supabase
+    await supabaseService
       .from('conversations')
       .update({ last_message: new Date().toISOString() })
       .eq('id', conversationId);
 
     // Buscar el contacto asociado a la conversación para actualizar su updated_at
-    const { data: convData } = await supabase
+    const { data: convData } = await supabaseService
       .from('conversations')
       .select('contact_id')
       .eq('id', conversationId)
       .single();
 
     if (convData?.contact_id) {
-      await supabase
+      await supabaseService
         .from('contacts')
         .update({ updated_at: new Date().toISOString() })
         .eq('id', convData.contact_id);
@@ -80,16 +82,16 @@ export async function POST(request: Request) {
     if (!toPhone.startsWith('web-')) {
       sent = await sendWhatsAppMessage(toPhone, content.trim());
       if (!sent) {
-        console.warn('Mensaje guardado en base de datos pero falló el envío por API de WhatsApp.');
+        logger.warn({ toPhone, conversationId }, 'Mensaje guardado en base de datos pero falló el envío por API de WhatsApp.');
       }
     } else {
-      console.log(`Mensaje manual guardado; envío de WhatsApp omitido por ser número web de prueba (${toPhone}).`);
+      logger.info({ toPhone }, `Mensaje manual guardado; envío de WhatsApp omitido por ser número web de prueba`);
       sent = true;
     }
 
     return NextResponse.json({ success: true, message, whatsappSent: sent });
   } catch (error: any) {
-    console.error('Error sending manual message:', error);
+    logger.error({ err: error.message }, 'Error sending manual message');
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

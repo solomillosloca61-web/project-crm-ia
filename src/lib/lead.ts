@@ -1,23 +1,23 @@
 // C:\Users\lucia\PROJECT_CRM_IA\src\lib\lead.ts
-import { supabase } from './supabase';
+import { supabaseService } from './supabase';
 import { notifyAdmin } from '@/lib/notify';
+import { logger } from './logger';
+import { updateAirtableLeadStatus } from './airtable';
 
 /**
  * Analiza el contenido de un mensaje de usuario y actualiza el score y estado del contacto en Supabase.
  */
-export async function updateLeadScore(contactId: string, messageContent: string) {
+export async function updateLeadScore(contactId: string, messageContent: string, contactPhone?: string) {
   try {
-    // Importar notificación al admin
-
     // 1. Traer datos actuales del contacto
-    const { data: contact, error: fetchError } = await supabase
+    const { data: contact, error: fetchError } = await supabaseService
       .from('contacts')
       .select('score, status')
       .eq('id', contactId)
       .single();
 
     if (fetchError || !contact) {
-      console.error('Error obteniendo contacto para Scoring:', fetchError);
+      logger.error({ err: fetchError?.message, contactId }, 'Error obteniendo contacto para Scoring');
       return;
     }
 
@@ -28,7 +28,6 @@ export async function updateLeadScore(contactId: string, messageContent: string)
     // 2. Reglas de Scoring y Detección de Agenda de Cita
     const isSchedulingIntent = 
       /(turno|agendar|calendly|reunión|reunion|cita|entrevista|reservar|reserva|llamada|llamame|videollamada)/i.test(text) ||
-      // Ej. "se puede mañana", "puedo a las 6", "coordinamos para el lunes", "mañana a las 18"
       /((se puede|puedo|coordinar|coordinamos|llamada|llamen|llamame|reunión|reunion|hablar|entrevista).*(mañana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|hoy|tarde|día|dia))/i.test(text) ||
       /((mañana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|hoy).*(a las|alrededor de|cerca de|tipo|\b\d{1,2}\s*(am|pm|hs|horas|hora)))/i.test(text);
 
@@ -44,11 +43,15 @@ export async function updateLeadScore(contactId: string, messageContent: string)
       }
     }
 
+    const isCallbackIntent = /(llamame|llámame|llamarme|llamar|contacto telefónico|contacto telefonico|llamada|volver a llamar|llamen|hablar por telefono|hablar por teléfono|marcame|marcar)/i.test(text);
+
     if (appointmentDate) {
       scoreDiff = 40;
       newStatus = 'reunion_agendada';
+    } else if (isCallbackIntent) {
+      scoreDiff = 20;
+      newStatus = 'volver_a_llamar';
     } else if (isSchedulingIntent) {
-      // Si el regex estricto dio true pero no extrajo fecha, igual lo consideramos intención de agendar
       scoreDiff = 40;
       newStatus = 'reunion_agendada';
     } else if (/(comprar|afiliarme|contratar|precio|cuanto sale|cuánto sale|costo|planes|plan|adherirme|adherir)/i.test(text)) {
@@ -61,14 +64,12 @@ export async function updateLeadScore(contactId: string, messageContent: string)
       scoreDiff = -20;
       newStatus = 'lead_frio';
     } else {
-      // Mensaje genérico o de cortesía
       scoreDiff = 2;
     }
 
     const currentScore = contact.score || 0;
-    const newScore = Math.max(0, currentScore + scoreDiff); // Evitar scores negativos menores a 0
+    const newScore = Math.max(0, currentScore + scoreDiff);
 
-    // Si cambió el estado, el score, o se agendó una fecha
     if (newScore !== currentScore || newStatus !== contact.status || appointmentDate) {
       const updateData: any = {
         score: newScore,
@@ -80,7 +81,7 @@ export async function updateLeadScore(contactId: string, messageContent: string)
         updateData.appointment_date = appointmentDate;
       }
 
-      const { error: updateError } = await supabase
+      const { error: updateError } = await supabaseService
         .from('contacts')
         .update(updateData)
         .eq('id', contactId);
@@ -88,23 +89,48 @@ export async function updateLeadScore(contactId: string, messageContent: string)
       if (updateError) {
         // Fallback si la columna no existe en Supabase
         if (updateError.message.includes('appointment_date') || updateError.code === '42703') {
-          console.warn('La columna appointment_date no existe en Supabase. Reintentando sin ella...');
+          logger.warn('La columna appointment_date no existe en Supabase. Reintentando sin ella...');
           delete updateData.appointment_date;
-          const { error: retryError } = await supabase
+          const { error: retryError } = await supabaseService
             .from('contacts')
             .update(updateData)
             .eq('id', contactId);
           if (retryError) {
-            console.error('Error reintentando sin appointment_date:', retryError);
+            logger.error({ err: retryError.message }, 'Error reintentando sin appointment_date');
           }
         } else {
-          console.error('Error actualizando score/status del lead:', updateError);
+          logger.error({ err: updateError.message }, 'Error actualizando score/status del lead');
         }
       } else {
-        console.log(`Lead ${contactId} actualizado: Score ${currentScore} -> ${newScore}, Estado: ${contact.status} -> ${newStatus}, Cita: ${appointmentDate || 'No agendada'}`);
-        // Notificar al administrador si el lead está calificado o agendado
-        if (newScore >= 100 || newStatus === 'reunion_agendada') {
-          const { data: adminContact } = await supabase
+        logger.info({ contactId, score: newScore, status: newStatus, appointmentDate }, 'Lead actualizado');
+
+        // 🔔 Si el cliente pide que lo vuelvan a llamar → actualizar Airtable para que Valentina lo llame
+        if (newStatus === 'volver_a_llamar') {
+          const phoneToUpdate = contactPhone ?? (await supabaseService
+            .from('contacts')
+            .select('phone')
+            .eq('id', contactId)
+            .single()
+            .then(r => r.data?.phone ?? ''));
+
+          if (phoneToUpdate) {
+            await updateAirtableLeadStatus(phoneToUpdate, 'Volver a llamar');
+          }
+        }
+
+        // Notificar al administrador si el lead está calificado o agendado Y no está en estado descalificado/negativo
+        const negativeStatuses = [
+          'CORTÓ RÁPIDO',
+          'CORTÓ SIN INTERES',
+          'CORTÓ SIN DATOS',
+          'NO CALIFICA',
+          'EQUIVOCADO',
+          'SPAM',
+          'RECHAZADO'
+        ];
+        const isNegative = negativeStatuses.includes(newStatus || '');
+        if (!isNegative && (newScore >= 100 || newStatus === 'reunion_agendada')) {
+          const { data: adminContact } = await supabaseService
             .from('contacts')
             .select('name, phone')
             .eq('id', contactId)
@@ -120,8 +146,8 @@ export async function updateLeadScore(contactId: string, messageContent: string)
         }
       }
     }
-  } catch (error) {
-    console.error('Fallo en la lógica de updateLeadScore:', error);
+  } catch (error: any) {
+    logger.error({ err: error.message }, 'Fallo en la lógica de updateLeadScore');
   }
 }
 
@@ -165,11 +191,8 @@ function parseAppointmentDate(text: string): string | null {
     let minute = 0;
 
     const hourMatches = [
-      // "6 pm", "6pm", "18 hs", "18hs", "18:30"
       /(\b\d{1,2})(?::(\d{2}))?\s*(pm|am|hs|horas|hora)/i,
-      // "a las 6", "a las 18"
       /a las\s*(\d{1,2})(?::(\d{2}))?/i,
-      // "alrededor de las 6", "cerca de las 6", "alrededor de 6"
       /(?:alrededor de|cerca de|tipo|las)\s*(\d{1,2})(?::(\d{2}))?/i
     ];
 
@@ -204,7 +227,7 @@ function parseAppointmentDate(text: string): string | null {
       return `${yyyy}-${mm}-${dd}T${hh}:${minStr}:00-03:00`;
     }
   } catch (err) {
-    console.error('Error parseando fecha de cita:', err);
+    logger.error(err, 'Error parseando fecha de cita');
   }
   return null;
 }
@@ -214,16 +237,16 @@ function parseAppointmentDate(text: string): string | null {
  * Devuelve un string en formato ISO con offset de Argentina (UTC-3) o null si no se encuentra fecha.
  */
 export async function extractAppointmentDateWithLLM(text: string): Promise<string | null> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const geminiApiKey = process.env.GEMINI_API_KEY;
+  const openRouterApiKey = process.env.OPENROUTER_API_KEY;
   const model = process.env.OPENROUTER_MODEL || 'anthropic/claude-3-5-sonnet';
 
-  if (!apiKey || !text || !text.trim()) {
+  if (!text || !text.trim()) {
     return null;
   }
 
   try {
     const now = new Date();
-    // Obtener la fecha en la zona horaria de Argentina
     const referenceDateStr = now.toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
     const dayOfWeek = now.toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires", weekday: "long" });
 
@@ -244,38 +267,65 @@ REGLAS DE EXTRACCIÓN:
 
     const userPrompt = `Texto a analizar: "${text}"`;
 
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
-        ],
-        temperature: 0.1,
-        max_tokens: 500
-      })
-    });
+    let result = '';
+    let reasoning = '';
+    let data: any = null;
 
-    if (!response.ok) {
-      console.error('Error al llamar a OpenRouter en extractAppointmentDateWithLLM:', response.status, await response.text());
-      return null;
+    if (geminiApiKey) {
+      try {
+        logger.info('Calling Google Gemini API directly for extractAppointmentDateWithLLM...');
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`;
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            generationConfig: { maxOutputTokens: 500, temperature: 0.1 }
+          })
+        });
+        if (response.ok) {
+          data = await response.json();
+          result = (data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '').trim();
+        } else {
+          logger.error({ status: response.status }, 'Gemini direct call returned non-OK status in extractAppointmentDateWithLLM');
+        }
+      } catch (geminiErr: any) {
+        logger.error({ err: geminiErr.message }, 'Gemini API call failed in extractAppointmentDateWithLLM, falling back...');
+      }
     }
 
-    const data = await response.json();
-    let result = (data?.choices?.[0]?.message?.content ?? '').trim();
-    const reasoning = (data?.choices?.[0]?.message?.reasoning ?? '').trim();
+    if (!result && openRouterApiKey) {
+      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${openRouterApiKey}`
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ],
+          temperature: 0.1,
+          max_tokens: 500
+        })
+      });
 
-    // Eliminar etiquetas de razonamiento <think>...</think> si estuvieran presentes
+      if (response.ok) {
+        data = await response.json();
+        result = (data?.choices?.[0]?.message?.content ?? '').trim();
+        reasoning = (data?.choices?.[0]?.message?.reasoning ?? '').trim();
+      } else {
+        logger.error({ status: response.status }, 'Error al llamar a OpenRouter en extractAppointmentDateWithLLM');
+      }
+    }
+
     if (result.includes('<think>')) {
       result = result.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
     }
 
-    // Función auxiliar para extraer y normalizar la fecha ISO
     const extractIsoDate = (inputStr: string): string | null => {
       if (!inputStr) return null;
       const match = inputStr.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:[+-]\d{2}:?\d{2}|Z)?)/);
@@ -305,13 +355,11 @@ REGLAS DE EXTRACCIÓN:
       return null;
     };
 
-    // Primero buscar en el contenido limpio
     let dateFound = extractIsoDate(result);
     if (dateFound) {
       return dateFound;
     }
 
-    // Si no se encontró, probar con la propiedad reasoning si existe
     if (reasoning) {
       dateFound = extractIsoDate(reasoning);
       if (dateFound) {
@@ -319,16 +367,14 @@ REGLAS DE EXTRACCIÓN:
       }
     }
 
-    // Como último recurso, si la respuesta entera contenía <think> y eliminamos todo,
-    // buscar en la respuesta sin limpiar
     const rawContent = (data?.choices?.[0]?.message?.content ?? '').trim();
     dateFound = extractIsoDate(rawContent);
     if (dateFound) {
       return dateFound;
     }
 
-  } catch (err) {
-    console.error('Excepción en extractAppointmentDateWithLLM:', err);
+  } catch (err: any) {
+    logger.error({ err: err.message }, 'Excepción en extractAppointmentDateWithLLM');
   }
   return null;
 }

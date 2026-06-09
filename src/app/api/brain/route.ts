@@ -1,9 +1,10 @@
 // C:\Users\lucia\PROJECT_CRM_IA\src\app\api\brain\route.ts
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
-import { syncVapiAssistant } from '@/lib/ai';
+import { supabaseService } from '@/lib/supabase';
+import { syncVapiAssistant, syncElevenLabsAgent } from '@/lib/ai';
+import { logger } from '@/lib/logger';
 
-const defaultWpPrompt = 'Eres Valentina, asesora comercial de MP Salud. Estás chateando por WhatsApp con un lead. Tu tono es amigable, profesional y muy argentino (usando voseo rioplatense: "che", "tenés", "comunicate", etc.). Tu objetivo es asesorar sobre los planes de salud, resolver dudas y agendar una llamada o video-auditoría con un asesor humano.';
+const defaultWpPrompt = 'Eres Valentina, asesora comercial de MP Salud. Estás chateando por WhatsApp con un lead. Tu tono es amigable, profesional y muy argentino (usando voseo rioplatense: "tenés", "comunicate", etc.). Tu objetivo es asesorar sobre los planes de salud, resolver dudas y agendar una llamada o video-auditoría con un asesor humano.';
 const defaultKnowledge = '- MP Salud ofrece planes individuales, familiares y corporativos.\n- Cobertura nacional en clínicas de primer nivel.\n- Precios competitivos y promociones por traspaso de obra social.';
 
 export async function GET() {
@@ -15,18 +16,18 @@ export async function GET() {
 
   // 1. Intentar cargar desde Supabase
   try {
-    const { data, error } = await supabase
+    const { data, error } = await supabaseService
       .from('ai_brain')
       .select('key, value');
 
     if (error) {
-      console.warn('Error reading from ai_brain table:', error);
+      logger.warn({ err: error.message }, 'Error reading from ai_brain table');
       dbMissing = true;
     } else {
       dbSettings = data;
     }
-  } catch (e) {
-    console.warn('Supabase not reachable or table missing:', e);
+  } catch (e: any) {
+    logger.warn({ err: e.message }, 'Supabase not reachable or table missing');
     dbMissing = true;
   }
 
@@ -51,13 +52,14 @@ export async function GET() {
         const fullPrompt = systemMsg?.content || '';
 
         // Separar y quedarnos sólo con el original (limpiando el bloque dinámico)
-        const parts = fullPrompt.split('\n\n### REGLAS Y DATOS ADICIONALES (CEREBRO DINÁMICO)\n');
+        const splitRegex = /\r?\n\r?\n### REGLAS Y DATOS ADICIONALES \(CEREBRO DINÁMICO\)\r?\n/;
+        const parts = fullPrompt.split(splitRegex);
         systemPromptVapi = parts[0].trim();
       } else {
-        console.warn(`Could not fetch Vapi assistant. Status: ${getRes.status}`);
+        logger.warn({ status: getRes.status }, 'Could not fetch Vapi assistant');
       }
-    } catch (err) {
-      console.error('Error fetching Vapi assistant details:', err);
+    } catch (err: any) {
+      logger.error({ err: err.message }, 'Error fetching Vapi assistant details');
     }
   }
 
@@ -82,7 +84,7 @@ export async function POST(request: Request) {
       { key: 'learned_facts', value: learned_facts || '' }
     ];
 
-    const { error } = await supabase
+    const { error } = await supabaseService
       .from('ai_brain')
       .upsert(upsertRows, { onConflict: 'key' });
 
@@ -90,12 +92,14 @@ export async function POST(request: Request) {
       throw new Error(`Failed to upsert in Supabase: ${error.message}`);
     }
 
-    // 2. Sincronizar el asistente de Vapi inmediatamente
-    const syncSuccess = await syncVapiAssistant(knowledge_base || '', learned_facts || '');
+    // 2. Sincronizar Vapi y ElevenLabs inmediatamente
+    const syncVapiSuccess = await syncVapiAssistant(knowledge_base || '', learned_facts || '');
+    const syncElevenSuccess = await syncElevenLabsAgent(knowledge_base || '', learned_facts || '');
+    const syncSuccess = syncVapiSuccess && syncElevenSuccess;
 
     return NextResponse.json({ success: true, syncSuccess });
   } catch (error: any) {
-    console.error('Error in POST /api/brain:', error);
+    logger.error({ err: error.message }, 'Error in POST /api/brain');
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

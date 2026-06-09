@@ -1,13 +1,14 @@
 // C:\Users\lucia\PROJECT_CRM_IA\src\app\api\stats\route.ts
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { supabaseService } from '@/lib/supabase';
+import { logger } from '@/lib/logger';
 
 export const revalidate = 0; // Disable caching to fetch live data
 
 export async function GET() {
   try {
     // Fetch all system report messages
-    const { data: messages, error } = await supabase
+    const { data: messages, error } = await supabaseService
       .from('messages')
       .select('content, created_at')
       .eq('role', 'system')
@@ -26,8 +27,14 @@ export async function GET() {
       'OBJECIÓN PRECIO': 0,
       'CORTÓ A LA MITAD': 0,
       'CORTÓ RÁPIDO': 0,
+      'CORTÓ CON DATOS': 0,
       'NO CONTESTÓ': 0,
       'BUZÓN DE VOZ': 0,
+      'REUNION_AGENDADA': 0,
+      'VOLVER_A_LLAMAR': 0,
+      'NO APTO / SIN APORTES': 0,
+      'NÚMERO EQUIVOCADO': 0,
+      'YA TIENE MP SALUD': 0,
       'DESCONOCIDO': 0
     };
 
@@ -61,6 +68,8 @@ export async function GET() {
             states['CORTÓ RÁPIDO']++;
           } else if (stateName.includes('MITAD')) {
             states['CORTÓ A LA MITAD']++;
+          } else if (stateName.includes('DATOS') || stateName.includes('INFO')) {
+            states['CORTÓ CON DATOS']++;
           } else {
             states['DESCONOCIDO']++;
           }
@@ -73,9 +82,22 @@ export async function GET() {
     const averageDuration = callsWithDuration > 0 ? Math.round(totalDuration / callsWithDuration) : 0;
 
     // Calculate sentiment percentages based on call outcomes
-    const positiveCount = states['POTENCIAL POSITIVO'];
-    const negativeCount = states['RECHAZO CLARO'] || states['CORTÓ RÁPIDO'] || 0;
-    const neutralCount = totalCalls - positiveCount - negativeCount;
+    const positiveCount = 
+      (states['POTENCIAL POSITIVO'] || 0) + 
+      (states['CORTÓ CON DATOS'] || 0) + 
+      (states['REUNION_AGENDADA'] || 0) + 
+      (states['VOLVER_A_LLAMAR'] || 0);
+    
+    const negativeCount = 
+      (states['RECHAZO CLARO'] || 0) + 
+      (states['CORTÓ RÁPIDO'] || 0) + 
+      (states['CORTÓ A LA MITAD'] || 0) + 
+      (states['NO CONTESTÓ'] || 0) + 
+      (states['BUZÓN DE VOZ'] || 0) + 
+      (states['NO APTO / SIN APORTES'] || 0) + 
+      (states['NÚMERO EQUIVOCADO'] || 0);
+      
+    const neutralCount = Math.max(0, totalCalls - positiveCount - negativeCount);
 
     const positivePct = totalCalls > 0 ? Math.round((positiveCount / totalCalls) * 100) : 0;
     const neutralPct = totalCalls > 0 ? Math.round((neutralCount / totalCalls) * 100) : 0;
@@ -93,7 +115,7 @@ export async function GET() {
       }
     });
   } catch (error: any) {
-    console.error('Error fetching stats:', error);
+    logger.error({ err: error.message }, 'Error fetching stats');
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
