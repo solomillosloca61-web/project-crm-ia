@@ -137,7 +137,7 @@ input, textarea, select, button {
 
 /* Contact List Item */
 .contact-item {
-  padding: 16px 20px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--border);
   cursor: pointer;
   transition: all 0.2s;
@@ -514,6 +514,15 @@ input, textarea, select, button {
 
 .btn-save.primary:hover {
   background-color: var(--accent-hover);
+  opacity: 0.9;
+}
+
+.btn-save.danger {
+  background-color: var(--danger);
+  border: none;
+}
+
+.btn-save.danger:hover {
   opacity: 0.9;
 }
 

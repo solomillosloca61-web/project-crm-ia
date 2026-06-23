@@ -15,6 +15,7 @@ export async function GET() {
     const { data: contacts, error } = await supabaseService
       .from('contacts')
       .select('*, conversations(*, messages(role))')
+      .or('source.eq.whatsapp,source.is.null')
       .order('updated_at', { ascending: false });
 
     if (error) {
@@ -79,7 +80,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Datos de entrada inválidos', details: parsed.error.format() }, { status: 400 });
     }
 
-    const { phone, name, status, score, notes, transcript, duration } = parsed.data;
+    const { phone, name, status, score, notes, transcript, duration, recordingUrl } = parsed.data;
 
     let phoneNum = phone;
     let clientName = name;
@@ -177,12 +178,13 @@ export async function POST(request: Request) {
     // 3. Registrar el resumen o transcripción de la llamada en el chat del CRM
     if (transcript) {
       const durationStr = (duration !== undefined && duration !== null) ? `\nDuración: ${duration} segundos` : '';
+      const recordingStr = recordingUrl ? `\nGrabación: ${recordingUrl}` : '';
       await supabaseService
         .from('messages')
         .insert({
           conversation_id: conversation.id,
           role: 'system',
-          content: `📞 [Reporte de Llamada] Estado: ${status || 'N/A'}${durationStr}\nNotas: ${notes || 'Sin notas de llamada.'}\n\nTranscripción:\n${transcript}`
+          content: `📞 [Reporte de Llamada] Estado: ${status || 'N/A'}${durationStr}${recordingStr}\nNotas: ${notes || 'Sin notas de llamada.'}\n\nTranscripción:\n${transcript}`
         });
 
       // Actualizar fecha del último mensaje en la conversación
@@ -335,3 +337,90 @@ No agregues introducciones ni explicaciones de tu parte, devolvé ÚNICAMENTE el
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
+
+// DELETE – Eliminar un contacto específico o realizar una limpieza masiva de leads no calificados
+export async function DELETE(request: Request) {
+  try {
+    const url = new URL(request.url);
+    const id = url.searchParams.get('id');
+    const clean = url.searchParams.get('clean');
+
+    if (clean === 'true') {
+      logger.info('Iniciando limpieza masiva de leads no calificados en Supabase...');
+
+      const coldStatuses = ['NO CONTESTÓ', 'BUZÓN DE VOZ', 'CORTÓ RÁPIDO', 'CORTÓ A LA MITAD', 'lead_frio'];
+
+      const { data: contacts, error: fetchError } = await supabaseService
+        .from('contacts')
+        .select('id, score, status, conversations(messages(role))');
+
+      if (fetchError) {
+        throw new Error(`Error buscando contactos para limpiar: ${fetchError.message}`);
+      }
+
+      const idsToDelete: string[] = [];
+
+      for (const contact of contacts || []) {
+        const isQualified = (contact.score || 0) >= 50 || 
+                            contact.status === 'lead_calificado' || 
+                            contact.status === 'reunion_agendada' || 
+                            contact.status === 'cliente';
+
+        const isCold = coldStatuses.includes(contact.status || '');
+        
+        let hasUserMessages = false;
+        if (contact.conversations) {
+          for (const conv of contact.conversations as any[]) {
+            if (conv.messages?.some((m: any) => m.role === 'user')) {
+              hasUserMessages = true;
+              break;
+            }
+          }
+        }
+
+        // Eliminar si no califica, o si es un lead frío sin mensajes del usuario
+        if (!isQualified || (isCold && !hasUserMessages)) {
+          idsToDelete.push(contact.id);
+        }
+      }
+
+      if (idsToDelete.length === 0) {
+        return NextResponse.json({ success: true, count: 0, message: 'No se encontraron leads no calificados para limpiar.' });
+      }
+
+      logger.info({ count: idsToDelete.length }, 'Eliminando leads no calificados en Supabase...');
+      
+      const { error: deleteError } = await supabaseService
+        .from('contacts')
+        .delete()
+        .in('id', idsToDelete);
+
+      if (deleteError) {
+        throw new Error(`Error en eliminación masiva: ${deleteError.message}`);
+      }
+
+      return NextResponse.json({ success: true, count: idsToDelete.length });
+    }
+
+    if (!id) {
+      return NextResponse.json({ error: 'Falta el parámetro ID del contacto' }, { status: 400 });
+    }
+
+    logger.info({ contactId: id }, 'Eliminando contacto individual en Supabase...');
+
+    const { error } = await supabaseService
+      .from('contacts')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      throw error;
+    }
+
+    return NextResponse.json({ success: true, id });
+  } catch (error: any) {
+    logger.error({ err: error.message }, 'Error in DELETE /api/contacts');
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+

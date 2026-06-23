@@ -1,7 +1,7 @@
 // C:\Users\lucia\PROJECT_CRM_IA\src\app\api\messages\route.ts
 import { NextResponse } from 'next/server';
 import { supabaseService } from '@/lib/supabase';
-import { sendWhatsAppMessage } from '@/lib/webhook';
+import { sendWhatsAppMessage, sendWhatsAppTemplate } from '@/lib/webhook';
 import { logger } from '@/lib/logger';
 
 // GET – Obtener todos los mensajes de una conversación específica
@@ -36,7 +36,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { conversationId, toPhone, content } = body;
+    const { conversationId, toPhone, content, templateName, clientName } = body;
 
     if (!conversationId || !toPhone || !content) {
       return NextResponse.json({ error: 'Missing required parameters (conversationId, toPhone, content)' }, { status: 400 });
@@ -80,7 +80,11 @@ export async function POST(request: Request) {
     // 3. Enviar el mensaje real a través de WhatsApp Cloud API
     let sent = false;
     if (!toPhone.startsWith('web-')) {
-      sent = await sendWhatsAppMessage(toPhone, content.trim());
+      if (templateName) {
+        sent = await sendWhatsAppTemplate(toPhone, templateName, clientName || 'Cliente');
+      } else {
+        sent = await sendWhatsAppMessage(toPhone, content.trim());
+      }
       if (!sent) {
         logger.warn({ toPhone, conversationId }, 'Mensaje guardado en base de datos pero falló el envío por API de WhatsApp.');
       }

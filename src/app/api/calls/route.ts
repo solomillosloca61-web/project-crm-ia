@@ -3,6 +3,8 @@ import { NextResponse } from 'next/server';
 import { supabaseService } from '@/lib/supabase';
 import { logger } from '@/lib/logger';
 
+export const dynamic = 'force-dynamic';
+
 // GET – Obtener todos los reportes de llamadas (mensajes del sistema que inician con 📞)
 export async function GET() {
   try {

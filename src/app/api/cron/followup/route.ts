@@ -1,6 +1,8 @@
 // C:\Users\lucia\PROJECT_CRM_IA\src\app\api\cron\followup\route.ts
 import { NextRequest } from 'next/server';
 import { supabaseService } from '@/lib/supabase';
+
+export const dynamic = 'force-dynamic';
 import { callAI } from '@/lib/ai';
 import { sendWhatsAppMessage } from '@/lib/webhook';
 import { logger } from '@/lib/logger';
@@ -32,6 +34,7 @@ export async function GET(request: NextRequest) {
     const { data: contacts, error: contactsErr } = await supabaseService
       .from('contacts')
       .select(`id, name, phone, status, conversations (id, last_message) `)
+      .or('source.eq.whatsapp,source.is.null')
       .neq('status', 'reunion_agendada')
       .neq('status', 'cliente');
 

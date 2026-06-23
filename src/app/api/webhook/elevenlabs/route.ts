@@ -134,7 +134,8 @@ export async function POST(request: NextRequest) {
         status,
         notes,
         transcript: transcriptText,
-        duration
+        duration,
+        recordingUrl: eventData.recording_url || eventData.recordingUrl || ''
       })
     });
 

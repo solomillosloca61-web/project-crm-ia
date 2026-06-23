@@ -52,11 +52,11 @@ export async function POST(request: NextRequest) {
     // 2. Ejecutar Lead Scoring para calificar el interés del usuario
     await updateLeadScore(contact.id, message.content, contact.phone);
 
-    // 3. Verificar si la IA está habilitada (estado "en_conversacion" o pausa) antes de consultar a la IA
-    if (contact.pause_ai || contact.status === 'en_conversacion') {
-      logger.info({ contactId: contact.id }, 'IA pausada o conversación humana en curso, no se enviará respuesta automática');
+    // 3. Verificar si la IA está habilitada (pausa explícita) antes de consultar a la IA
+    if (contact.pause_ai) {
+      logger.info({ contactId: contact.id }, 'IA pausada de forma manual, no se enviará respuesta automática');
       return new Response(
-        JSON.stringify({ success: true, reply: null, note: 'IA pausada o conversación humana en curso' }),
+        JSON.stringify({ success: true, reply: null, note: 'IA pausada de forma manual' }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
     }
@@ -80,6 +80,11 @@ export async function POST(request: NextRequest) {
 
       // 5. Enviar la respuesta por WhatsApp usando la API de Meta
       if (!contact.phone.startsWith('web-')) {
+        // Simular retraso humano de escritura (entre 2 y 4 segundos según longitud de respuesta)
+        const typingDelay = Math.max(2000, Math.min(4000, reply.length * 30));
+        logger.info({ typingDelay, phone: contact.phone }, 'Simulando retraso humano de escritura...');
+        await new Promise((resolve) => setTimeout(resolve, typingDelay));
+
         await sendWhatsAppMessage(contact.phone, reply);
       } else {
         logger.info({ phone: contact.phone }, 'Mensaje omitido para número web de prueba en webhook');

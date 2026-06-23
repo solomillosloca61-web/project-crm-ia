@@ -9,6 +9,7 @@ export const ContactCreateSchema = z.object({
   notes: z.string().optional(),
   transcript: z.string().optional(),
   duration: z.union([z.number(), z.string().transform((val) => parseInt(val, 10))]).optional(),
+  recordingUrl: z.string().optional(),
 });
 
 export const ContactUpdateSchema = z.object({

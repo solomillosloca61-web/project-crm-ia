@@ -5,6 +5,7 @@ import { logger } from './logger';
 function cleanAiReply(reply: string): string {
   if (!reply) return '';
   return reply
+    .replace(/<think>[\s\S]*?<\/think>/gi, '') // Elimina el proceso de pensamiento de DeepSeek R1/otros
     .replace(/<\/?[a-zA-Z_0-9-]+>/gi, '') // Elimina etiquetas XML/HTML como </assistant>, <model>, etc.
     .trim();
 }

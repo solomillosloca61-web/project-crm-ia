@@ -92,7 +92,7 @@ export async function sendWhatsAppTemplate(toPhone: string, templateName: string
       template: {
         name: templateName,
         language: {
-          code: isHelloWorld ? 'en_US' : 'es_AR'
+          code: templateName === 'hello_world' ? 'en_US' : (templateName === 'bienvenida_calificado' ? 'en' : 'es_AR')
         }
       }
     };

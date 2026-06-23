@@ -66,6 +66,7 @@ export default function CRMDashboard() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('todos');
+  const [qualificationFilter, setQualificationFilter] = useState<'todos' | 'califican' | 'no_califican'>('todos');
   
   // Navigation Tabs State
   const [activeTab, setActiveTab] = useState<'chats' | 'dashboard' | 'calendar' | 'brain' | 'calls'>('chats');
@@ -491,6 +492,30 @@ export default function CRMDashboard() {
     { label: '📄 Solicitar DNI/Documentos', value: 'Buenísimo, para ir cargando tu afiliación al sistema, ¿me pasarías una foto de tu DNI (frente y dorso) y tu constancia de CUIL o monotributo? Así lo resolvemos al toque.' }
   ];
 
+  const officialTemplates = [
+    { label: '📢 Enviar Plantilla Oficial (Ignora 24hs)...', name: '', text: '' },
+    { 
+      label: '1. Reactivación de Contacto', 
+      name: 'reactivacion_contacto', 
+      text: 'Hola {{name}}, ¿cómo estás? Te escribo de MP Salud. 😊 Vimos que estabas consultando por nuestros planes de cobertura médica y queríamos saber si tenías alguna duda o si te gustaría que coordinemos una breve asesoría de 5 minutos por llamada. ¿Te parece bien?' 
+    },
+    { 
+      label: '2. Recordatorio de Asesoría', 
+      name: 'recordatorio_asesoria', 
+      text: 'Hola {{name}}, ¿cómo estás? Te recordamos que hoy tenemos agendada nuestra breve asesoría médica de MP Salud. 📞 ¿Nos confirmas si sigues disponible en ese horario para recibir nuestra llamada?' 
+    },
+    { 
+      label: '3. Bienvenida Lead Calificado', 
+      name: 'bienvenida_calificado', 
+      text: '¡Hola {{name}}! Qué bueno estar en contacto. Te escribo de MP Salud. 😊 Notamos tu interés en mejorar tu cobertura médica derivando tus aportes de obra social. Queremos ofrecerte un plan a tu medida con cobertura al 100%. ¿Te gustaría que te enviemos las propuestas de planes hoy mismo?' 
+    },
+    { 
+      label: '4. Seguimiento de Presupuesto', 
+      name: 'seguimiento_presupue', 
+      text: 'Hola {{name}}, espero que estés muy bien. Te escribo de MP Salud para saber si pudiste analizar las propuestas de cobertura médica que te pasamos el otro día. 🏥 ¿Tienes alguna consulta sobre la cartilla médica o los precios?' 
+    }
+  ];
+
   const setQuickAppointment = (type: 'hoy-18' | 'manana-10' | 'manana-16' | 'lunes-11') => {
     const now = new Date();
     let target = new Date(now);
@@ -597,6 +622,56 @@ export default function CRMDashboard() {
     }
   };
 
+  // Handle deleting a contact
+  const handleDeleteContact = async (id: string) => {
+    if (!confirm('¿Estás seguro de que deseas eliminar este contacto? Esta acción es irreversible y borrará todo su historial de chat.')) {
+      return;
+    }
+    
+    try {
+      const res = await fetch(`/api/contacts?id=${id}`, {
+        method: 'DELETE'
+      });
+
+      if (res.ok) {
+        setSelectedContact(null);
+        await loadContacts();
+      } else {
+        const errorData = await res.json();
+        alert('Error al eliminar contacto: ' + (errorData.error || 'Intenta de nuevo.'));
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Error de conexión.');
+    }
+  };
+
+  // Handle cleaning up unqualified leads
+  const handleCleanUnqualified = async () => {
+    if (!confirm('⚠️ ADVERTENCIA: Esta acción eliminará permanentemente todos los leads no calificados (con score menor a 50 y que no estén en estado premium) de la base de datos para liberar espacio. ¿Deseas continuar?')) {
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/contacts?clean=true', {
+        method: 'DELETE'
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        alert(`Limpieza completada. Se eliminaron ${data.count} leads no calificados.`);
+        setSelectedContact(null);
+        await loadContacts();
+      } else {
+        const errorData = await res.json();
+        alert('Error al limpiar CRM: ' + (errorData.error || 'Intenta de nuevo.'));
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Error de conexión.');
+    }
+  };
+
   // Handle sending manual WhatsApp responses
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -648,6 +723,62 @@ export default function CRMDashboard() {
     }
   };
 
+  const handleSendOfficialTemplate = async (templateName: string, templateText: string) => {
+    if (!selectedContact) return;
+    const activeConv = selectedContact.conversations?.find(c => !c.resolved) || selectedContact.conversations?.[0];
+    if (!activeConv) {
+      alert('Este contacto no tiene una conversación activa. Por favor, inicia una llamada o espera un mensaje.');
+      return;
+    }
+
+    const clientName = selectedContact.name || 'Cliente';
+    const textToSend = templateText.replace('{{name}}', clientName);
+    const displayContent = `📢 [Mensaje de Plantilla: ${templateName}]\n\n${textToSend}`;
+
+    if (!confirm(`¿Estás seguro que deseas enviar la plantilla oficial "${templateName}" a ${clientName}? Esto consumirá una interacción de WhatsApp.`)) {
+      return;
+    }
+
+    setIsSendingMessage(true);
+
+    // Add temporary message locally for immediate UI update
+    const tempMsg: Message = {
+      id: Math.random().toString(),
+      conversation_id: activeConv.id,
+      role: 'assistant',
+      content: displayContent,
+      created_at: new Date().toISOString()
+    };
+    setMessages(prev => [...prev, tempMsg]);
+    setAutoScroll(true);
+
+    try {
+      const res = await fetch('/api/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversationId: activeConv.id,
+          toPhone: selectedContact.phone,
+          content: displayContent,
+          templateName: templateName,
+          clientName: clientName
+        })
+      });
+
+      if (res.ok) {
+        loadMessages(activeConv.id);
+        loadContacts();
+      } else {
+        alert('Fallo al enviar la plantilla oficial de WhatsApp.');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Error de conexión.');
+    } finally {
+      setIsSendingMessage(false);
+    }
+  };
+
   // Filter contacts lists based on search bar and status filter
   const filteredContacts = contacts.filter(contact => {
     const matchesSearch = 
@@ -658,6 +789,12 @@ export default function CRMDashboard() {
       statusFilter === 'todos' || 
       contact.status === statusFilter;
 
+    const isQualified = (contact.score || 0) >= 50 || contact.status === 'lead_calificado' || contact.status === 'reunion_agendada' || contact.status === 'cliente';
+    const matchesQualification = 
+      qualificationFilter === 'todos' ||
+      (qualificationFilter === 'califican' && isQualified) ||
+      (qualificationFilter === 'no_califican' && !isQualified);
+
     // Filter out cold/unanswered leads globally from the sidebar to not waste time
     const isColdStatus = ['NO CONTESTÓ', 'BUZÓN DE VOZ', 'CORTÓ RÁPIDO', 'CORTÓ A LA MITAD'].includes(contact.status || '');
     const hasChat = contact.has_chat_messages;
@@ -665,7 +802,7 @@ export default function CRMDashboard() {
       return false;
     }
 
-    return matchesSearch && matchesStatus;
+    return matchesSearch && matchesStatus && matchesQualification;
   });
 
   const getStatusBadgeClass = (status: string) => {
@@ -828,9 +965,28 @@ export default function CRMDashboard() {
           <h1 className="sidebar-title" style={{ margin: 0 }}>
             <span className="emoji-span">🏥</span><span>MP Salud</span> CRM
           </h1>
-          <span style={{ fontSize: '11px', fontWeight: 'bold', background: 'rgba(255, 255, 255, 0.08)', padding: '4px 8px', borderRadius: '10px', color: 'var(--text-muted)' }}>
-            Leads: {filteredContacts.length}
-          </span>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <button
+              onClick={handleCleanUnqualified}
+              style={{
+                fontSize: '10px',
+                fontWeight: 'bold',
+                background: 'rgba(239, 68, 68, 0.1)',
+                border: '1px solid rgba(239, 68, 68, 0.2)',
+                color: 'var(--danger)',
+                padding: '3px 6px',
+                borderRadius: '6px',
+                cursor: 'pointer'
+              }}
+              title="Eliminar leads que no califican del CRM"
+              type="button"
+            >
+              🧹 Limpiar
+            </button>
+            <span style={{ fontSize: '11px', fontWeight: 'bold', background: 'rgba(255, 255, 255, 0.08)', padding: '4px 8px', borderRadius: '10px', color: 'var(--text-muted)' }}>
+              Leads: {filteredContacts.length}
+            </span>
+          </div>
         </div>
 
         {/* Tab Navigation Menu */}
@@ -902,27 +1058,72 @@ export default function CRMDashboard() {
               <span className="emoji-span" style={{ margin: 0 }}>➕</span>
             </button>
           </div>
-          <div style={{ marginTop: '10px', display: 'flex', gap: '5px', overflowX: 'auto', paddingBottom: '2px' }}>
-            {['todos', 'nuevo', 'en_conversacion', 'volver_a_llamar', 'lead_calificado', 'reunion_agendada', 'lead_frio', 'cliente'].map((st) => (
+          {/* Segmented Control for Qualification (Todos / Califican / No Califican) */}
+          <div style={{ 
+            display: 'flex', 
+            background: 'var(--bg-input)', 
+            padding: '2px', 
+            borderRadius: '10px', 
+            border: '1px solid var(--border)',
+            marginBottom: '10px',
+            marginTop: '10px'
+          }}>
+            {[
+              { id: 'todos', label: 'Todos' },
+              { id: 'califican', label: 'Califican ✅' },
+              { id: 'no_califican', label: 'No Califican ❌' }
+            ].map((opt) => (
               <button
-                key={st}
-                onClick={() => setStatusFilter(st)}
+                key={opt.id}
+                type="button"
+                onClick={() => setQualificationFilter(opt.id as any)}
                 style={{
-                  background: statusFilter === st ? 'var(--accent)' : 'var(--bg-input)',
-                  border: '1px solid var(--border)',
-                  borderRadius: '12px',
-                  padding: '3px 8px',
-                  fontSize: '9px',
-                  fontWeight: '600',
-                  color: '#fff',
+                  flex: 1,
+                  background: qualificationFilter === opt.id ? 'var(--accent)' : 'transparent',
+                  border: 'none',
+                  borderRadius: '8px',
+                  padding: '6px 0',
+                  fontSize: '11px',
+                  fontWeight: 'bold',
+                  color: qualificationFilter === opt.id ? '#fff' : 'var(--text-muted)',
                   cursor: 'pointer',
-                  textTransform: 'uppercase',
-                  whiteSpace: 'nowrap'
+                  transition: 'background-color 0.2s, color 0.2s',
+                  textAlign: 'center'
                 }}
               >
-                {st === 'todos' ? 'Todos' : getStatusLabel(st)}
+                {opt.label}
               </button>
             ))}
+          </div>
+
+          {/* Compact Dropdown for Status Filter */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+            <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 'bold', letterSpacing: '0.5px' }}>ESTADO:</span>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              style={{
+                flex: 1,
+                background: 'var(--bg-input)',
+                border: '1px solid var(--border)',
+                borderRadius: '8px',
+                padding: '5px 8px',
+                fontSize: '11px',
+                color: '#fff',
+                cursor: 'pointer',
+                outline: 'none',
+                fontWeight: 'bold'
+              }}
+            >
+              <option value="todos">Todos los Estados</option>
+              <option value="nuevo">Nuevo</option>
+              <option value="en_conversacion">En Charla</option>
+              <option value="volver_a_llamar">Volver a Llamar</option>
+              <option value="lead_calificado">Calificado</option>
+              <option value="reunion_agendada">Cita Agendada</option>
+              <option value="lead_frio">Frío</option>
+              <option value="cliente">Cliente</option>
+            </select>
           </div>
         </div>
 
@@ -934,14 +1135,30 @@ export default function CRMDashboard() {
           ) : (
             filteredContacts.map((contact) => {
               const isHot = (contact.score || 0) >= 70;
+              const isQualified = (contact.score || 0) >= 50 || contact.status === 'lead_calificado' || contact.status === 'reunion_agendada' || contact.status === 'cliente';
               return (
                 <div
                   key={contact.id}
                   className={`contact-item ${selectedContact?.id === contact.id ? 'selected' : ''} ${isHot ? 'hot-lead' : ''}`}
                   onClick={() => setSelectedContact(contact)}
+                  style={{ position: 'relative' }}
                 >
                 <div className="contact-item-header">
-                  <span className="contact-name">{contact.name || 'Cliente de WhatsApp'}</span>
+                  <span className="contact-name" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    {contact.name || 'Cliente de WhatsApp'}
+                    <span 
+                      title={isQualified ? 'Califica' : 'No califica'} 
+                      style={{
+                        display: 'inline-block',
+                        width: '7px',
+                        height: '7px',
+                        borderRadius: '50%',
+                        background: isQualified ? '#10b981' : '#ef4444',
+                        boxShadow: isQualified ? '0 0 5px #10b981' : '0 0 4px #ef4444',
+                        flexShrink: 0
+                      }}
+                    />
+                  </span>
                   <span className={getStatusBadgeClass(contact.status)}>
                     {getStatusLabel(contact.status)}
                   </span>
@@ -1056,7 +1273,7 @@ export default function CRMDashboard() {
                           key={msg.id}
                           className={`message-bubble ${msg.role === 'user' ? 'user' : 'assistant'}`}
                         >
-                          <span>{msg.content}</span>
+                          <span>{msg.content ? msg.content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim() : ''}</span>
                           <span className="message-time">{formatTime(msg.created_at)}</span>
                         </div>
                       );
@@ -1124,6 +1341,25 @@ export default function CRMDashboard() {
                     >
                       {templates.map((t, idx) => (
                         <option key={idx} value={t.value} style={{ background: 'var(--bg-sidebar)', color: '#fff' }}>
+                          {t.label}
+                        </option>
+                      ))}
+                    </select>
+
+                    <select
+                      className="template-select"
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        const t = officialTemplates.find(ot => ot.text === val);
+                        if (t && t.name) {
+                          handleSendOfficialTemplate(t.name, t.text);
+                          e.target.value = ''; // Reset select
+                        }
+                      }}
+                      style={{ border: '1px solid rgba(59, 130, 246, 0.4)', background: 'rgba(59, 130, 246, 0.05)', color: '#93c5fd' }}
+                    >
+                      {officialTemplates.map((t, idx) => (
+                        <option key={idx} value={t.text} style={{ background: 'var(--bg-sidebar)', color: '#fff' }}>
                           {t.label}
                         </option>
                       ))}
@@ -1377,13 +1613,22 @@ export default function CRMDashboard() {
                   </div>
                 </div>
 
-                <div style={{ padding: '20px', borderTop: '1px solid var(--border)' }}>
+                <div style={{ padding: '20px', borderTop: '1px solid var(--border)', display: 'flex', gap: '10px' }}>
                   <button
                     type="submit"
                     className="btn-save primary"
                     disabled={isSavingDetails}
+                    style={{ flex: 2 }}
                   >
                     {isSavingDetails ? 'Guardando...' : 'Guardar Cambios'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteContact(selectedContact.id)}
+                    className="btn-save danger"
+                    style={{ flex: 1 }}
+                  >
+                    Eliminar Lead
                   </button>
                 </div>
               </form>
