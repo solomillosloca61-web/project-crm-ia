@@ -39,7 +39,6 @@ interface Message {
   created_at: string;
 }
 
-const CRM_PASSWORD = '***REMOVED_CRM_PASSWORD***';
 const INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutos
 const WARNING_BEFORE_MS = 60 * 1000;           // aviso 1 minuto antes
 
@@ -320,17 +319,29 @@ export default function CRMDashboard() {
 
   if (!mounted) return null;
 
-  const handleLogin = () => {
-    if (passwordInput === CRM_PASSWORD) {
-      sessionStorage.setItem('crm_auth', 'ok');
-      setIsAuthenticated(true);
-      setAuthError(false);
-    } else {
-      setAuthError(true);
-      setAuthShake(true);
-      setPasswordInput('');
-      setTimeout(() => setAuthShake(false), 600);
+  const handleLogin = async () => {
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: passwordInput }),
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        sessionStorage.setItem('crm_auth', 'ok');
+        setIsAuthenticated(true);
+        setAuthError(false);
+        return;
+      }
+    } catch (err) {
+      console.error('[ERROR] Fallo al validar login:', err);
     }
+
+    setAuthError(true);
+    setAuthShake(true);
+    setPasswordInput('');
+    setTimeout(() => setAuthShake(false), 600);
   };
 
   if (!isAuthenticated) {

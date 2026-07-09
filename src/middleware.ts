@@ -12,9 +12,14 @@ export function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // 2. Fetch credentials from environment variables (fallback to default credentials if not set)
-  const username = process.env.CRM_USERNAME || 'admin';
-  const password = process.env.CRM_PASSWORD || '***REMOVED_WEAK_FALLBACK_PASSWORD***';
+  // 2. Fetch credentials from environment variables (no hardcoded fallback — deny access if unset)
+  const username = process.env.CRM_USERNAME;
+  const password = process.env.CRM_PASSWORD;
+
+  if (!username || !password) {
+    console.error('[ERROR] CRM_USERNAME o CRM_PASSWORD no configuradas');
+    return new NextResponse('Configuración de acceso incompleta', { status: 500 });
+  }
 
   // 3. Read the Authorization header
   const authHeader = req.headers.get('authorization');
