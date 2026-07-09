@@ -10,6 +10,8 @@ export const ContactCreateSchema = z.object({
   transcript: z.string().optional(),
   duration: z.union([z.number(), z.string().transform((val) => parseInt(val, 10))]).optional(),
   recordingUrl: z.string().optional(),
+  call_blocked: z.boolean().optional(),
+  call_blocked_reason: z.string().nullable().optional(),
 });
 
 export const ContactUpdateSchema = z.object({
@@ -21,6 +23,8 @@ export const ContactUpdateSchema = z.object({
   calendly_link: z.string().optional(),
   pause_ai: z.boolean().optional(),
   appointment_date: z.string().nullable().optional(),
+  call_blocked: z.boolean().optional(),
+  call_blocked_reason: z.string().nullable().optional(),
 });
 
 export const WebhookPayloadSchema = z.object({

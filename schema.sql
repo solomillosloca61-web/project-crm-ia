@@ -16,6 +16,11 @@ create table contacts (
   calendly_link text,
   created_at    timestamptz default now(),
   pause_ai      boolean default false,
+  call_blocked  boolean default false,
+  -- true cuando Vapi/Anura reportó un fallo permanente de red/SIP (número inexistente,
+  -- desconectado, etc.). El disparador de llamadas y el cron de WhatsApp deben excluir
+  -- estos contactos.
+  call_blocked_reason text,
   updated_at    timestamptz default now()
 );
 

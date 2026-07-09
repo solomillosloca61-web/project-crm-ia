@@ -33,10 +33,11 @@ export async function GET(request: NextRequest) {
     // 1️⃣ Obtener contactos con sus conversaciones
     const { data: contacts, error: contactsErr } = await supabaseService
       .from('contacts')
-      .select(`id, name, phone, status, conversations (id, last_message) `)
+      .select(`id, name, phone, status, call_blocked, conversations (id, last_message) `)
       .or('source.eq.whatsapp,source.is.null')
       .neq('status', 'reunion_agendada')
-      .neq('status', 'cliente');
+      .neq('status', 'cliente')
+      .or('call_blocked.eq.false,call_blocked.is.null');
 
     if (contactsErr) throw contactsErr;
 
@@ -67,6 +68,11 @@ export async function GET(request: NextRequest) {
     contacts?.forEach((c: any) => {
       // Omitir contactos con estados negativos
       if (c.status && excludedStatuses.includes(c.status)) {
+        return;
+      }
+      // Defensa en profundidad: aunque ya se filtró en la query, evitar cualquier
+      // contacto marcado con fallo permanente de red/SIP.
+      if (c.call_blocked) {
         return;
       }
 

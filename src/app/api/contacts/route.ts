@@ -80,7 +80,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Datos de entrada inválidos', details: parsed.error.format() }, { status: 400 });
     }
 
-    const { phone, name, status, score, notes, transcript, duration, recordingUrl } = parsed.data;
+    const { phone, name, status, score, notes, transcript, duration, recordingUrl, call_blocked, call_blocked_reason } = parsed.data;
 
     let phoneNum = phone;
     let clientName = name;
@@ -132,9 +132,16 @@ export async function POST(request: Request) {
     }
     if (notes !== undefined) {
       // Concatenar notas existentes si las hay
-      updateData.notes = contact.notes 
+      updateData.notes = contact.notes
         ? `${contact.notes}\n\n[Llamada ${new Date().toLocaleDateString()}]: ${notes}`
         : `[Llamada ${new Date().toLocaleDateString()}]: ${notes}`;
+    }
+    // Fallo permanente de red/SIP (Anura/Vapi): bloquear reintentos automáticos de llamada
+    // y de seguimiento por WhatsApp para este contacto.
+    if (call_blocked === true) {
+      updateData.call_blocked = true;
+      updateData.call_blocked_reason = call_blocked_reason ?? null;
+      logger.warn({ phone: phoneNum, reason: call_blocked_reason }, 'Contacto marcado como call_blocked por fallo permanente de red/SIP');
     }
     
     // Si se extrajo una fecha de cita, actualizar con el estado de reunion_agendada y la fecha
